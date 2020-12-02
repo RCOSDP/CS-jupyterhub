@@ -20,6 +20,14 @@
 <div class="container">
   <table class="table table-striped">
     <thead>
+      <div style="float: left;">
+        <h3>CPU usage</h3>
+        <img id="cpuMetric" src="{{ grafana_url }}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2051&width=300&height=300&tz=Asia%2FTokyo" alt="user not logged in"/>
+      </div>
+      <div>
+        <h3>Memory usage</h3>
+        <img id="memoryMetric" src="{{ grafana_url }}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2052&width=300&height=300&tz=Asia%2FTokyo" alt="user not logged in"/>
+      </div>
       <tr>
         {% block thead %}
         {{ th("User (%i)" % users|length, 'name') }}
@@ -210,6 +218,14 @@
 {% block script %}
 {{ super() }}
 <script type="text/javascript">
-require(["admin"]);
+  require(["admin"]);
+  let from = +new Date - (30*60000);
+  let cpuMetric = document.getElementById("cpuMetric");
+  let cpuMetricSrc = cpuMetric.getAttribute("src");
+  cpuMetric.setAttribute("src", cpuMetricSrc.concat(`&from=${from}`));
+
+  let memoryMetric = document.getElementById("memoryMetric");
+  let memoryMetricSrc = memoryMetric.getAttribute("src");
+  memoryMetric.setAttribute("src", memoryMetricSrc.concat(`&from=${from}`));
 </script>
 {% endblock %}

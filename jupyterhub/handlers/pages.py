@@ -8,6 +8,7 @@ import time
 from collections import defaultdict
 from datetime import datetime
 from http.client import responses
+import os
 
 from jinja2 import TemplateNotFound
 from tornado import gen
@@ -463,6 +464,7 @@ class AdminHandler(BaseHandler):
             allow_named_servers=self.allow_named_servers,
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version='{} {}'.format(__version__, self.version_hash),
+            grafana_url=os.environ.get('GRAFANA_URL')
         )
         self.finish(html)
 
