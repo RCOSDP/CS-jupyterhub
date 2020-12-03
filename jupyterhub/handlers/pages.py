@@ -5,6 +5,7 @@ import asyncio
 import codecs
 import copy
 import time
+import requests
 from collections import defaultdict
 from datetime import datetime
 from http.client import responses
@@ -396,6 +397,33 @@ class SpawnPendingHandler(BaseHandler):
         next_url = self.get_next_url(default=user.server_url(server_name))
         self.redirect(next_url)
 
+class GrafanaCpuPanelHandler(BaseHandler):
+    @web.authenticated
+    @admin_only
+    async def get(self):
+        grafana_url = os.environ.get('GRAFANA_URL')
+        from_time = int(time.time()) - 1800
+        res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2052&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
+                          headers={
+                              "Authorization": os.environ.get('GRAFANA_API_KEY')
+                          })
+        self.write(res.content)
+        self.set_header("Content-type",  "image/png")
+
+
+class GrafanaMemoryPanelHandler(BaseHandler):
+    @web.authenticated
+    @admin_only
+    async def get(self):
+        grafana_url = os.environ.get('GRAFANA_URL')
+        from_time = int(time.time()) - 1800
+        res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2051&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
+                          headers={
+                              "Authorization": os.environ.get('GRAFANA_API_KEY')
+                          })
+        self.write(res.content)
+        self.set_header("Content-type",  "image/png")
+
 
 class AdminHandler(BaseHandler):
     """Render the admin page."""
@@ -464,7 +492,6 @@ class AdminHandler(BaseHandler):
             allow_named_servers=self.allow_named_servers,
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version='{} {}'.format(__version__, self.version_hash),
-            grafana_url=os.environ.get('GRAFANA_URL')
         )
         self.finish(html)
 
@@ -598,6 +625,8 @@ default_handlers = [
     (r'/', RootHandler),
     (r'/home', HomeHandler),
     (r'/admin', AdminHandler),
+    (r'/grafana_memory_panel', GrafanaCpuPanelHandler),
+    (r'/grafana_cpu_panel', GrafanaMemoryPanelHandler),
     (r'/spawn-pending/([^/]+)', SpawnPendingHandler),
     (r'/spawn-pending/([^/]+)/([^/]+)', SpawnPendingHandler),
     (r'/spawn', SpawnHandler),
