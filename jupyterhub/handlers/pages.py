@@ -402,7 +402,7 @@ class GrafanaCpuPanelHandler(BaseHandler):
     @admin_only
     async def get(self):
         grafana_url = os.environ.get('GRAFANA_URL')
-        from_time = int(time.time()) - 1800
+        from_time = (int(time.time()) - 1800) * 1000
         res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2052&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
                           headers={
                               "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
@@ -416,7 +416,7 @@ class GrafanaMemoryPanelHandler(BaseHandler):
     @admin_only
     async def get(self):
         grafana_url = os.environ.get('GRAFANA_URL')
-        from_time = int(time.time()) - 1800
+        from_time = (int(time.time()) - 1800) * 1000
         res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2051&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
                           headers={
                               "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
