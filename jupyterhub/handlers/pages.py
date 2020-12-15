@@ -405,7 +405,7 @@ class GrafanaCpuPanelHandler(BaseHandler):
         from_time = int(time.time()) - 1800
         res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2052&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
                           headers={
-                              "Authorization": os.environ.get('GRAFANA_API_KEY')
+                              "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
                           })
         self.write(res.content)
         self.set_header("Content-type",  "image/png")
@@ -419,7 +419,7 @@ class GrafanaMemoryPanelHandler(BaseHandler):
         from_time = int(time.time()) - 1800
         res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2051&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
                           headers={
-                              "Authorization": os.environ.get('GRAFANA_API_KEY')
+                              "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
                           })
         self.write(res.content)
         self.set_header("Content-type",  "image/png")
