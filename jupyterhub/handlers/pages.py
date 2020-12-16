@@ -397,32 +397,27 @@ class SpawnPendingHandler(BaseHandler):
         next_url = self.get_next_url(default=user.server_url(server_name))
         self.redirect(next_url)
 
-class GrafanaCpuPanelHandler(BaseHandler):
+class GrafanaImageHandler(BaseHandler):
     @web.authenticated
     @admin_only
     async def get(self):
-        grafana_url = os.environ.get('GRAFANA_URL')
+        grafana_host = os.environ.get('GRAFANA_HOST')
         from_time = (int(time.time()) - 1800) * 1000
-        res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2052&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
+        res = requests.get(f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
                           headers={
                               "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
                           })
         self.write(res.content)
         self.set_header("Content-type",  "image/png")
 
+class GrafanaCpuPanelHandler(GrafanaImageHandler):
+    def panel_id(self):
+        return '2052'
 
-class GrafanaMemoryPanelHandler(BaseHandler):
-    @web.authenticated
-    @admin_only
-    async def get(self):
-        grafana_url = os.environ.get('GRAFANA_URL')
-        from_time = (int(time.time()) - 1800) * 1000
-        res = requests.get(f"{grafana_url}render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId=2051&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
-                          headers={
-                              "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
-                          })
-        self.write(res.content)
-        self.set_header("Content-type",  "image/png")
+
+class GrafanaMemoryPanelHandler(GrafanaImageHandler):
+    def panel_id(self):
+        return '2051'
 
 
 class AdminHandler(BaseHandler):
@@ -492,6 +487,7 @@ class AdminHandler(BaseHandler):
             allow_named_servers=self.allow_named_servers,
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version='{} {}'.format(__version__, self.version_hash),
+            grafana_url=f"http://{os.environ.get('GRAFANA_HOST')}"
         )
         self.finish(html)
 
