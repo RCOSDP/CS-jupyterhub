@@ -401,7 +401,7 @@ class GrafanaImageHandler(BaseHandler):
     @web.authenticated
     @admin_only
     async def get(self):
-        grafana_host = os.environ.get('GRAFANA_HOST')
+        grafana_host = os.environ.get('GRAFANA_INTERNAL_HOST')
         from_time = (int(time.time()) - 1800) * 1000
         res = requests.get(f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
                           headers={
@@ -487,7 +487,7 @@ class AdminHandler(BaseHandler):
             allow_named_servers=self.allow_named_servers,
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version='{} {}'.format(__version__, self.version_hash),
-            grafana_url=f"http://{os.environ.get('GRAFANA_HOST')}"
+            grafana_url=f"http://{os.environ.get('GRAFANA_EXTERNAL_HOST')}"
         )
         self.finish(html)
 
