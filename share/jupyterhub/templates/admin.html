@@ -225,7 +225,6 @@
 require(["admin"]);
 
 function ReLoadImages(){
-    console.log("reload");
     $('img[data-lazysrc]').each( function(){
         //* set the img src from data-src
         $( this ).attr( 'src', $( this ).attr( 'data-lazysrc' ) );
