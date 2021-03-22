@@ -84,28 +84,47 @@ spec:
         - command:
           - jupyterhub-singleuser
           env:
-          {{- with .Values.schedulableNotebook }}
           - name: SLACK_API_URL
-            value: {{ .slack.apiURL | quote }}
+            value: {{ .Values.schedulableNotebook.slack.apiURL | quote }}
           - name: OPENIDP_USERNAME
-            value: {{ .openIDP.userName | quote }}
+            valueFrom:
+              secretKeyRef:
+                {{- if .Values.hub.existingSecret }}
+                name: {{ .Values.hub.existingSecret }}
+                {{- else }}
+                name: hub-secret
+                {{- end }}
+                key: openIDP.username
           - name: OPENIDP_PASSWORD
-            value: {{ .openIDP.password | quote }}
+            valueFrom:
+              secretKeyRef:
+                {{- if .Values.hub.existingSecret }}
+                name: {{ .Values.hub.existingSecret }}
+                {{- else }}
+                name: hub-secret
+                {{- end }}
+                key: openIDP.password
           - name: PROMETHEUS_SNAPSHOT_PATH
-            value: {{ .prometheus.snapshotPath | quote }}
+            value: {{ .Values.schedulableNotebook.prometheus.snapshotPath | quote }}
           - name: GCS_BUCKET
-            value: {{ .googleCloudStorage.bucket | quote}}
+            valueFrom:
+              secretKeyRef:
+                {{- if .Values.hub.existingSecret }}
+                name: {{ .Values.hub.existingSecret }}
+                {{- else }}
+                name: hub-secret
+                {{- end }}
+                key: gcs.bucketName
           - name: PROMETHEUS_HOST
-            value: {{ .prometheus.host | quote }}
+            value: {{ .Values.schedulableNotebook.prometheus.host | quote }}
           - name: PROMETHEUS_PORT
-            value: {{ .prometheus.port | quote }}
+            value: {{ .Values.schedulableNotebook.prometheus.port | quote }}
           - name: PROMETHEUS_NAMESPACE
-            value: {{ .prometheus.podNamespace | quote }}
+            value: {{ .Values.schedulableNotebook.prometheus.podNamespace | quote }}
           - name: PROMETHEUS_CONTAINER
-            value: {{ .prometheus.container | quote}}
+            value: {{ .Values.schedulableNotebook.prometheus.container | quote}}
           - name: PROMETHEUS_DEPLOYMENT
-            value: {{ .prometheus.deployment }}
-          {{- end }}
+            value: {{ .Values.schedulableNotebook.prometheus.deployment }}
           - name: JUPYTERHUB_CLIENT_ID
             value: service-schedulable-notebook
           - name: JUPYTERHUB_SERVICE_PREFIX
