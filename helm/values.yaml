@@ -91,6 +91,11 @@ hub:
 rbac:
   enabled: true
 
+grafana:
+  apiKey: ''
+  internalHost: ''
+  externalHost: ''
+
 usersExporter:
   secretToken: ''
   image:

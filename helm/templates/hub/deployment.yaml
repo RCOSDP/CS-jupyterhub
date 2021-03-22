@@ -159,7 +159,7 @@ spec:
             protocol: TCP
           env:
           - name: JUPYTER_HUB_HOST
-            value: proxy-public.default.svc.cluster.local
+            value: proxy-public.{{ .Release.Namespace }}.svc.cluster.local
           - name: JUPYTER_HUB_PORT
             value: '80'
           - name: JUPYTER_HUB_API_TOKEN
@@ -238,6 +238,19 @@ spec:
               value: "1"
             - name: HELM_RELEASE_NAME
               value: {{ .Release.Name | quote }}
+            - name: GRAFANA_INTERNAL_HOST
+              value: {{ .Values.grafana.internalHost }}
+            - name: GRAFANA_EXTERNAL_HOST
+              value: {{ .Values.grafana.externalHost }}
+            - name: GRAFANA_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  {{- if .Values.hub.existingSecret }}
+                  name: {{ .Values.hub.existingSecret }}
+                  {{- else }}
+                  name: hub-secret
+                  {{- end }}
+                  key: grafana.apiKey
             {{- if .Values.hub.cookieSecret }}
             - name: JPY_COOKIE_SECRET
               valueFrom:
