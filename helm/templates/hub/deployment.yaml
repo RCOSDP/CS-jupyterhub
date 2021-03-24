@@ -86,6 +86,10 @@ spec:
           env:
           - name: SLACK_API_URL
             value: {{ .Values.schedulableNotebook.slack.apiURL | quote }}
+          - name: SLACK_API_TOKEN
+            value: {{ .Values.schedulableNotebook.slack.apiToken | quote }}
+          - name: SLACK_CHANNEL
+            value: {{ .Values.schedulableNotebook.slack.channel | quote }}
           - name: OPENIDP_USERNAME
             valueFrom:
               secretKeyRef:

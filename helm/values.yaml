@@ -111,6 +111,8 @@ schedulableNotebook:
   imagePullPolicy: Always
   slack:
     apiURL: ''
+    apiToken: ''
+    channel: ''
   prometheus:
     host: 'localhost'
     port: '9090'
