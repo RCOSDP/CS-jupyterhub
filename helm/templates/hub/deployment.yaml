@@ -132,7 +132,7 @@ spec:
           - name: JUPYTERHUB_CLIENT_ID
             value: service-schedulable-notebook
           - name: JUPYTERHUB_SERVICE_PREFIX
-            value: services/schedulable-notebook/
+            value: /services/schedulable-notebook/
           - name: JUPYTERHUB_ADMIN_ACCESS
             value: "True"
           - name: JUPYTERHUB_API_TOKEN
