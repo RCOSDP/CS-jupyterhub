@@ -106,7 +106,7 @@ usersExporter:
 schedulableNotebook:
   secretToken: ''
   image:
-    name: lmeval/schedulable_notebooks
+    name: lmeval/schedulable_notebook
     tag: latest
   imagePullPolicy: Always
   slack:
