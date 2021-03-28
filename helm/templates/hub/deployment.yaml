@@ -90,6 +90,8 @@ spec:
             value: {{ .Values.schedulableNotebook.slack.apiToken | quote }}
           - name: SLACK_CHANNEL
             value: {{ .Values.schedulableNotebook.slack.channel | quote }}
+          - name: TZ
+            value: {{ .Values.schedulableNotebook.timezone | quote }}
           - name: OPENIDP_USERNAME
             valueFrom:
               secretKeyRef:

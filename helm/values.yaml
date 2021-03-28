@@ -125,6 +125,7 @@ schedulableNotebook:
     password: ''
   googleCloudStorage:
     bucket: ''
+  timezone: UTC
 proxy:
   secretToken: ''
   deploymentStrategy:
