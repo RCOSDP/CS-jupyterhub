@@ -58,6 +58,7 @@ spec:
             - --api-port=8001
             - --default-target=http://$(HUB_SERVICE_HOST):$(HUB_SERVICE_PORT)
             - --error-target=http://$(HUB_SERVICE_HOST):$(HUB_SERVICE_PORT)/hub/error
+            - --no-x-forward    
             {{- if $manualHTTPS }}
             - --port=8443
             - --redirect-port=8000

@@ -146,11 +146,16 @@ spec:
                 name: hub-secret
                 {{- end }}
                 key: schedulable-notebook.token
+          - name: GOOGLE_APPLICATION_CREDENTIALS
+            value: /var/secrets/googleCloudServiceAccount.json
           image: {{ .Values.schedulableNotebook.image.name }}:{{ .Values.schedulableNotebook.image.tag }}
           {{- with .Values.schedulableNotebook.image.pullPolicy }}
           imagePullPolicy: {{ . }}
           {{- end }}
           name: schedulable-notebook
+          volumeMounts:
+            - name: secret
+              mountPath: /var/secrets
           ports:
           - containerPort: 8888
             protocol: TCP

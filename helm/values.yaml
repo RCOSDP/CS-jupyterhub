@@ -103,6 +103,14 @@ usersExporter:
     tag: latest
   imagePullPolicy: Always
 
+openIDP:
+  userName: ''
+  password: ''
+googleCloudServiceAccount:
+  json: ''
+googleCloudStorage:
+  bucket: ''
+
 schedulableNotebook:
   secretToken: ''
   image:
@@ -120,12 +128,8 @@ schedulableNotebook:
     podNamespace: ''
     container: 'prometheus-server'
     deployment: 'prometheus-server'
-  openIDP:
-    userName: ''
-    password: ''
-  googleCloudStorage:
-    bucket: ''
   timezone: UTC
+  protocol: 'https'
 proxy:
   secretToken: ''
   deploymentStrategy:
@@ -284,6 +288,9 @@ singleuser:
     - image: lmeval/network_output_exporter
       imagePullPolicy: Always
       name: network-output-exporter
+      env:
+        - name: NOE_CAPTURE_INTERNAL
+          value: "true"
       ports:
         - containerPort: 9000
           protocol: TCP
