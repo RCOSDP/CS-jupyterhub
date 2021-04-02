@@ -50,8 +50,7 @@ class NotificationsHandler(APIHandler):
 class TemplatesHandler(APIHandler):
     @admin_only
     async def get(self):
-        """GET /api/notifications/templates get templates for notifications
-        """
+        """GET /api/notifications/templates get templates for notifications"""
         templates = [self.normalize(t) for t in self.app.notifier.templates]
 
         self.set_status(200)

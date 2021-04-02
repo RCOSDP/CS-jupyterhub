@@ -3,11 +3,11 @@ JupyterHub
 ==========
 
 `JupyterHub`_ is the best way to serve `Jupyter notebook`_ for multiple users.
-It can be used in a classes of students, a corporate data science group or scientific
+It can be used in a class of students, a corporate data science group or scientific
 research group. It is a multi-user **Hub** that spawns, manages, and proxies multiple
 instances of the single-user `Jupyter notebook`_ server.
 
-To make life easier, JupyterHub have distributions. Be sure to
+To make life easier, JupyterHub has distributions. Be sure to
 take a look at them before continuing with the configuration of the broad
 original system of `JupyterHub`_. Today, you can find two main cases:
 
