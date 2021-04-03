@@ -130,6 +130,9 @@ schedulableNotebook:
     deployment: 'prometheus-server'
   timezone: UTC
   protocol: 'https'
+  jenkins:
+    storage: 1Gi
+    storageClassName: topology-aware-standard
 proxy:
   secretToken: ''
   deploymentStrategy:

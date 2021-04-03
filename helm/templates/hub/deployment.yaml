@@ -58,6 +58,9 @@ spec:
           persistentVolumeClaim:
             claimName: hub-db-dir
         {{- end }}
+        - name: jenkins-dir
+          persistentVolumeClaim:
+            claimName: jenkins-settings-dir
       {{- if .Values.rbac.enabled }}
       serviceAccountName: hub
       {{- end }}
@@ -156,6 +159,8 @@ spec:
           volumeMounts:
             - name: secret
               mountPath: /var/secrets
+            - name: jenkins-dir
+              mountPath: /home/jovyan/.jenkins
           ports:
           - containerPort: 8888
             protocol: TCP
