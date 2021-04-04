@@ -104,7 +104,7 @@ usersExporter:
   imagePullPolicy: Always
 
 openIDP:
-  userName: ''
+  username: ''
   password: ''
 googleCloudServiceAccount:
   json: ''
