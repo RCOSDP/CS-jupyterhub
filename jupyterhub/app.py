@@ -29,6 +29,14 @@ from urllib.parse import urlunparse
 if sys.version_info[:2] < (3, 3):
     raise ValueError("Python < 3.3 not supported: %s" % sys.version)
 
+# For compatibility with python versions 3.6 or earlier.
+# asyncio.Task.all_tasks() is fully moved to asyncio.all_tasks() starting with 3.9. Also applies to current_task.
+try:
+    asyncio_all_tasks = asyncio.all_tasks
+    asyncio_current_task = asyncio.current_task
+except AttributeError as e:
+    asyncio_all_tasks = asyncio.Task.all_tasks
+    asyncio_current_task = asyncio.Task.current_task
 
 from dateutil.parser import parse as parse_date
 from jinja2 import Environment, FileSystemLoader, PrefixLoader, ChoiceLoader
@@ -55,6 +63,7 @@ from traitlets import (
     Instance,
     Bytes,
     Float,
+    Union,
     observe,
     default,
     validate,
@@ -76,6 +85,7 @@ from .user import UserDict
 from .oauth.provider import make_provider
 from ._data import DATA_FILES_PATH
 from .log import CoroutineLogFormatter, log_request
+from .pagination import Pagination
 from .proxy import Proxy, ConfigurableHTTPProxy
 from .traitlets import URLPrefix, Command, EntryPointType, Callable
 from .utils import (
@@ -279,7 +289,7 @@ class JupyterHub(Application):
 
     @default('classes')
     def _load_classes(self):
-        classes = [Spawner, Authenticator, CryptKeeper]
+        classes = [Spawner, Authenticator, CryptKeeper, Pagination]
         for name, trait in self.traits(config=True).items():
             # load entry point groups into configurable class list
             # so that they show up in config files, etc.
@@ -317,7 +327,7 @@ class JupyterHub(Application):
 
     @validate("config_file")
     def _validate_config_file(self, proposal):
-        if not os.path.isfile(proposal.value):
+        if not self.generate_config and not os.path.isfile(proposal.value):
             print(
                 "ERROR: Failed to find specified config file: {}".format(
                     proposal.value
@@ -562,10 +572,23 @@ class JupyterHub(Application):
     def _url_part_changed(self, change):
         """propagate deprecated ip/port/base_url config to the bind_url"""
         urlinfo = urlparse(self.bind_url)
-        urlinfo = urlinfo._replace(netloc='%s:%i' % (self.ip, self.port))
+        if ':' in self.ip:
+            fmt = '[%s]:%i'
+        else:
+            fmt = '%s:%i'
+        urlinfo = urlinfo._replace(netloc=fmt % (self.ip, self.port))
         urlinfo = urlinfo._replace(path=self.base_url)
         bind_url = urlunparse(urlinfo)
+
+        # Warn if both bind_url and ip/port/base_url are set
         if bind_url != self.bind_url:
+            if self.bind_url != self._bind_url_default():
+                self.log.warning(
+                    "Both bind_url and ip/port/base_url have been configured. "
+                    "JupyterHub.ip, JupyterHub.port, JupyterHub.base_url are"
+                    " deprecated in JupyterHub 0.9,"
+                    " please use JupyterHub.bind_url instead."
+                )
             self.bind_url = bind_url
 
     bind_url = Unicode(
@@ -576,6 +599,22 @@ class JupyterHub(Application):
         Sets protocol, ip, base_url
         """,
     ).tag(config=True)
+
+    @validate('bind_url')
+    def _validate_bind_url(self, proposal):
+        """ensure protocol field of bind_url matches ssl"""
+        v = proposal['value']
+        proto, sep, rest = v.partition('://')
+        if self.ssl_cert and proto != 'https':
+            return 'https' + sep + rest
+        elif proto != 'http' and not self.ssl_cert:
+            return 'http' + sep + rest
+        return v
+
+    @default('bind_url')
+    def _bind_url_default(self):
+        proto = 'https' if self.ssl_cert else 'http'
+        return proto + '://:8000'
 
     subdomain_host = Unicode(
         '',
@@ -712,10 +751,10 @@ class JupyterHub(Application):
         help="""The ip or hostname for proxies and spawners to use
         for connecting to the Hub.
 
-        Use when the bind address (`hub_ip`) is 0.0.0.0 or otherwise different
+        Use when the bind address (`hub_ip`) is 0.0.0.0, :: or otherwise different
         from the connect address.
 
-        Default: when `hub_ip` is 0.0.0.0, use `socket.gethostname()`, otherwise use `hub_ip`.
+        Default: when `hub_ip` is 0.0.0.0 or ::, use `socket.gethostname()`, otherwise use `hub_ip`.
 
         Note: Some spawners or proxy implementations might not support hostnames. Check your
         spawner or proxy documentation to see if they have extra requirements.
@@ -917,6 +956,25 @@ class JupyterHub(Application):
     @default('authenticator')
     def _authenticator_default(self):
         return self.authenticator_class(parent=self, db=self.db)
+
+    implicit_spawn_seconds = Float(
+        0,
+        help="""Trigger implicit spawns after this many seconds.
+
+        When a user visits a URL for a server that's not running,
+        they are shown a page indicating that the requested server
+        is not running with a button to spawn the server.
+
+        Setting this to a positive value will redirect the user
+        after this many seconds, effectively clicking this button
+        automatically for the users,
+        automatically beginning the spawn process.
+
+        Warning: this can result in errors and surprising behavior
+        when sharing access URLs to actual servers,
+        since the wrong server is likely to be started.
+        """,
+    ).tag(config=True)
 
     allow_named_servers = Bool(
         False, help="Allow named single-user servers per user"
@@ -1267,12 +1325,25 @@ class JupyterHub(Application):
         """
     ).tag(config=True)
 
-    default_url = Unicode(
+    default_url = Union(
+        [Unicode(), Callable()],
         help="""
         The default URL for users when they arrive (e.g. when user directs to "/")
 
         By default, redirects users to their own server.
-        """
+
+        Can be a Unicode string (e.g. '/hub/home') or a callable based on the handler object:
+
+        ::
+        
+            def default_url_fn(handler):
+                user = handler.current_user
+                if user and user.admin:
+                    return '/hub/admin'
+                return '/hub/home'
+
+            c.JupyterHub.default_url = default_url_fn
+        """,
     ).tag(config=True)
 
     user_redirect_hook = Callable(
@@ -1669,22 +1740,22 @@ class JupyterHub(Application):
         # the admin_users config variable will never be used after this point.
         # only the database values will be referenced.
 
-        whitelist = [
+        allowed_users = [
             self.authenticator.normalize_username(name)
-            for name in self.authenticator.whitelist
+            for name in self.authenticator.allowed_users
         ]
-        self.authenticator.whitelist = set(whitelist)  # force normalization
-        for username in whitelist:
+        self.authenticator.allowed_users = set(allowed_users)  # force normalization
+        for username in allowed_users:
             if not self.authenticator.validate_username(username):
                 raise ValueError("username %r is not valid" % username)
 
-        if not whitelist:
+        if not allowed_users:
             self.log.info(
-                "Not using whitelist. Any authenticated user will be allowed."
+                "Not using allowed_users. Any authenticated user will be allowed."
             )
 
-        # add whitelisted users to the db
-        for name in whitelist:
+        # add allowed users to the db
+        for name in allowed_users:
             user = orm.User.find(db, name)
             if user is None:
                 user = orm.User(name=name)
@@ -1694,13 +1765,16 @@ class JupyterHub(Application):
         db.commit()
 
         # Notify authenticator of all users.
-        # This ensures Auth whitelist is up-to-date with the database.
-        # This lets whitelist be used to set up initial list,
-        # but changes to the whitelist can occur in the database,
+        # This ensures Authenticator.allowed_users is up-to-date with the database.
+        # This lets .allowed_users be used to set up initial list,
+        # but changes to the allowed_users set can occur in the database,
         # and persist across sessions.
+        total_users = 0
         for user in db.query(orm.User):
             try:
-                await maybe_future(self.authenticator.add_user(user))
+                f = self.authenticator.add_user(user)
+                if f:
+                    await maybe_future(f)
             except Exception:
                 self.log.exception("Error adding user %s already in db", user.name)
                 if self.authenticator.delete_invalid_users:
@@ -1722,6 +1796,7 @@ class JupyterHub(Application):
                         )
                     )
             else:
+                total_users += 1
                 # handle database upgrades where user.created is undefined.
                 # we don't want to allow user.created to be undefined,
                 # so initialize it to last_activity (if defined) or now.
@@ -1729,9 +1804,11 @@ class JupyterHub(Application):
                     user.created = user.last_activity or datetime.utcnow()
         db.commit()
 
-        # The whitelist set and the users in the db are now the same.
+        # The allowed_users set and the users in the db are now the same.
         # From this point on, any user changes should be done simultaneously
-        # to the whitelist set and user db, unless the whitelist is empty (all users allowed).
+        # to the allowed_users set and user db, unless the allowed set is empty (all users allowed).
+
+        TOTAL_USERS.set(total_users)
 
     async def init_groups(self):
         """Load predefined groups into the database"""
@@ -1744,11 +1821,11 @@ class JupyterHub(Application):
             for username in usernames:
                 username = self.authenticator.normalize_username(username)
                 if not (
-                    await maybe_future(
-                        self.authenticator.check_whitelist(username, None)
-                    )
+                    await maybe_future(self.authenticator.check_allowed(username, None))
                 ):
-                    raise ValueError("Username %r is not in whitelist" % username)
+                    raise ValueError(
+                        "Username %r is not in Authenticator.allowed_users" % username
+                    )
                 user = orm.User.find(db, name=username)
                 if user is None:
                     if not self.authenticator.validate_username(username):
@@ -1772,11 +1849,14 @@ class JupyterHub(Application):
             if kind == 'user':
                 name = self.authenticator.normalize_username(name)
                 if not (
-                    await maybe_future(self.authenticator.check_whitelist(name, None))
+                    await maybe_future(self.authenticator.check_allowed(name, None))
                 ):
-                    raise ValueError("Token name %r is not in whitelist" % name)
+                    raise ValueError(
+                        "Token user name %r is not in Authenticator.allowed_users"
+                        % name
+                    )
                 if not self.authenticator.validate_username(name):
-                    raise ValueError("Token name %r is not valid" % name)
+                    raise ValueError("Token user name %r is not valid" % name)
             if kind == 'service':
                 if not any(service["name"] == name for service in self.services):
                     self.log.warning(
@@ -1815,17 +1895,27 @@ class JupyterHub(Application):
     # purge expired tokens hourly
     purge_expired_tokens_interval = 3600
 
+    def purge_expired_tokens(self):
+        """purge all expiring token objects from the database
+
+        run periodically
+        """
+        # this should be all the subclasses of Expiring
+        for cls in (orm.APIToken, orm.OAuthAccessToken, orm.OAuthCode):
+            self.log.debug("Purging expired {name}s".format(name=cls.__name__))
+            cls.purge_expired(self.db)
+
     async def init_api_tokens(self):
         """Load predefined API tokens (for services) into database"""
         await self._add_tokens(self.service_tokens, kind='service')
         await self._add_tokens(self.api_tokens, kind='user')
-        purge_expired_tokens = partial(orm.APIToken.purge_expired, self.db)
-        purge_expired_tokens()
+
+        self.purge_expired_tokens()
         # purge expired tokens hourly
         # we don't need to be prompt about this
         # because expired tokens cannot be used anyway
         pc = PeriodicCallback(
-            purge_expired_tokens, 1e3 * self.purge_expired_tokens_interval
+            self.purge_expired_tokens, 1e3 * self.purge_expired_tokens_interval
         )
         pc.start()
 
@@ -2033,21 +2123,30 @@ class JupyterHub(Application):
             spawner._check_pending = False
 
         # parallelize checks for running Spawners
+        # run query on extant Server objects
+        # so this is O(running servers) not O(total users)
+        # Server objects can be associated with either a Spawner or a Service,
+        # we are only interested in the ones associated with a Spawner
         check_futures = []
-        for orm_user in db.query(orm.User):
-            user = self.users[orm_user]
-            self.log.debug("Loading state for %s from db", user.name)
-            for name, orm_spawner in user.orm_spawners.items():
-                if orm_spawner.server is not None:
-                    # spawner should be running
-                    # instantiate Spawner wrapper and check if it's still alive
-                    spawner = user.spawners[name]
-                    # signal that check is pending to avoid race conditions
-                    spawner._check_pending = True
-                    f = asyncio.ensure_future(check_spawner(user, name, spawner))
-                    check_futures.append(f)
-
-        TOTAL_USERS.set(len(self.users))
+        for orm_server in db.query(orm.Server):
+            orm_spawner = orm_server.spawner
+            if not orm_spawner:
+                # check for orphaned Server rows
+                # this shouldn't happen if we've got our sqlachemy right
+                if not orm_server.service:
+                    self.log.warning("deleting orphaned server %s", orm_server)
+                    self.db.delete(orm_server)
+                    self.db.commit()
+                continue
+            # instantiate Spawner wrapper and check if it's still alive
+            # spawner should be running
+            user = self.users[orm_spawner.user]
+            spawner = user.spawners[orm_spawner.name]
+            self.log.debug("Loading state for %s from db", spawner._log_name)
+            # signal that check is pending to avoid race conditions
+            spawner._check_pending = True
+            f = asyncio.ensure_future(check_spawner(user, spawner.name, spawner))
+            check_futures.append(f)
 
         # it's important that we get here before the first await
         # so that we know all spawners are instantiated and in the check-pending state
@@ -2057,7 +2156,7 @@ class JupyterHub(Application):
             self.log.debug(
                 "Awaiting checks for %i possibly-running spawners", len(check_futures)
             )
-            await gen.multi(check_futures)
+            await asyncio.gather(*check_futures)
         db.commit()
 
         # only perform this query if we are going to log it
@@ -2124,7 +2223,7 @@ class JupyterHub(Application):
     def init_tornado_settings(self):
         """Set up the tornado settings dict."""
         base_url = self.hub.base_url
-        jinja_options = dict(autoescape=True)
+        jinja_options = dict(autoescape=True, enable_async=True)
         jinja_options.update(self.jinja_environment_options)
         base_path = self._template_paths_default()[0]
         if base_path not in self.template_paths:
@@ -2136,6 +2235,14 @@ class JupyterHub(Application):
             ]
         )
         jinja_env = Environment(loader=loader, **jinja_options)
+        # We need a sync jinja environment too, for the times we *must* use sync
+        # code - particularly in RequestHandler.write_error. Since *that*
+        # is called from inside the asyncio event loop, we can't actulaly just
+        # schedule it on the loop - without starting another thread with its
+        # own loop, which seems not worth the trouble. Instead, we create another
+        # environment, exactly like this one, but sync
+        del jinja_options['enable_async']
+        jinja_env_sync = Environment(loader=loader, **jinja_options)
 
         login_url = url_path_join(base_url, 'login')
         logout_url = self.authenticator.logout_url(base_url)
@@ -2148,14 +2255,14 @@ class JupyterHub(Application):
         else:
             version_hash = datetime.now().strftime("%Y%m%d%H%M%S")
 
-        oauth_no_confirm_whitelist = set()
+        oauth_no_confirm_list = set()
         for service in self._service_map.values():
             if service.oauth_no_confirm:
                 self.log.warning(
                     "Allowing service %s to complete OAuth without confirmation on an authorization web page",
                     service.name,
                 )
-                oauth_no_confirm_whitelist.add(service.oauth_client_id)
+                oauth_no_confirm_list.add(service.oauth_client_id)
 
         settings = dict(
             log_function=log_request,
@@ -2182,15 +2289,17 @@ class JupyterHub(Application):
             template_path=self.template_paths,
             template_vars=self.template_vars,
             jinja2_env=jinja_env,
+            jinja2_env_sync=jinja_env_sync,
             version_hash=version_hash,
             subdomain_host=self.subdomain_host,
             domain=self.domain,
             statsd=self.statsd,
+            implicit_spawn_seconds=self.implicit_spawn_seconds,
             allow_named_servers=self.allow_named_servers,
             default_server_name=self._default_server_name,
             named_server_limit_per_user=self.named_server_limit_per_user,
             oauth_provider=self.oauth_provider,
-            oauth_no_confirm_whitelist=oauth_no_confirm_whitelist,
+            oauth_no_confirm_list=oauth_no_confirm_list,
             concurrent_spawn_limit=self.concurrent_spawn_limit,
             spawn_throttle_retry_range=self.spawn_throttle_retry_range,
             active_server_limit=self.active_server_limit,
@@ -2324,7 +2433,6 @@ class JupyterHub(Application):
         if init_spawners_timeout < 0:
             # negative timeout means forever (previous, most stable behavior)
             init_spawners_timeout = 86400
-        print(init_spawners_timeout)
 
         init_start_time = time.perf_counter()
         init_spawners_future = asyncio.ensure_future(self.init_spawners())
@@ -2480,7 +2588,7 @@ class JupyterHub(Application):
                 continue
             dt = parse_date(route_data['last_activity'])
             if dt.tzinfo:
-                # strip timezone info to naïve UTC datetime
+                # strip timezone info to naive UTC datetime
                 dt = dt.astimezone(timezone.utc).replace(tzinfo=None)
 
             if user.last_activity:
@@ -2693,6 +2801,40 @@ class JupyterHub(Application):
         self.log.critical("Received signalnum %s, , initiating shutdown...", signum)
         raise SystemExit(128 + signum)
 
+    def _init_asyncio_patch(self):
+        """Set default asyncio policy to be compatible with Tornado.
+
+        Tornado 6 (at least) is not compatible with the default
+        asyncio implementation on Windows.
+
+        Pick the older SelectorEventLoopPolicy on Windows
+        if the known-incompatible default policy is in use.
+
+        Do this as early as possible to make it a low priority and overrideable.
+
+        ref: https://github.com/tornadoweb/tornado/issues/2608
+
+        FIXME: If/when tornado supports the defaults in asyncio,
+               remove and bump tornado requirement for py38.
+        """
+        if sys.platform.startswith("win") and sys.version_info >= (3, 8):
+            try:
+                from asyncio import (
+                    WindowsProactorEventLoopPolicy,
+                    WindowsSelectorEventLoopPolicy,
+                )
+            except ImportError:
+                pass
+                # not affected
+            else:
+                if (
+                    type(asyncio.get_event_loop_policy())
+                    is WindowsProactorEventLoopPolicy
+                ):
+                    # WindowsProactorEventLoopPolicy is not compatible with Tornado 6.
+                    # Fallback to the pre-3.8 default of WindowsSelectorEventLoopPolicy.
+                    asyncio.set_event_loop_policy(WindowsSelectorEventLoopPolicy())
+
     _atexit_ran = False
 
     def atexit(self):
@@ -2700,6 +2842,7 @@ class JupyterHub(Application):
         if self._atexit_ran:
             return
         self._atexit_ran = True
+        self._init_asyncio_patch()
         # run the cleanup step (in a new loop, because the interrupted one is unclean)
         asyncio.set_event_loop(asyncio.new_event_loop())
         IOLoop.clear_current()
@@ -2710,9 +2853,7 @@ class JupyterHub(Application):
     async def shutdown_cancel_tasks(self, sig):
         """Cancel all other tasks of the event loop and initiate cleanup"""
         self.log.critical("Received signal %s, initiating shutdown...", sig.name)
-        tasks = [
-            t for t in asyncio.Task.all_tasks() if t is not asyncio.Task.current_task()
-        ]
+        tasks = [t for t in asyncio_all_tasks() if t is not asyncio_current_task()]
 
         if tasks:
             self.log.debug("Cancelling pending tasks")
@@ -2725,7 +2866,7 @@ class JupyterHub(Application):
             except StopAsyncIteration as e:
                 self.log.error("Caught StopAsyncIteration Exception", exc_info=True)
 
-            tasks = [t for t in asyncio.Task.all_tasks()]
+            tasks = [t for t in asyncio_all_tasks()]
             for t in tasks:
                 self.log.debug("Task status: %s", t)
         await self.cleanup()
@@ -2749,6 +2890,7 @@ class JupyterHub(Application):
     @classmethod
     def launch_instance(cls, argv=None):
         self = cls.instance()
+        self._init_asyncio_patch()
         loop = IOLoop.current()
         task = asyncio.ensure_future(self.launch_instance_async(argv))
         try:
