@@ -47,7 +47,7 @@ hub:
   extraVolumes: []
   extraVolumeMounts: []
   image:
-    name: matsusho/k8s-hub-remote-user
+    name: lmeval/k8s-hub-remote-user
     # pullSecrets:
     #   - secretName
   resources:
