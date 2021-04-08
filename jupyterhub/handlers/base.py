@@ -212,9 +212,25 @@ class BaseHandler(RequestHandler):
             self.set_header(
                 'Access-Control-Allow-Headers', 'accept, content-type, authorization'
             )
+        if self._is_allowed_request():
+            self.set_header(
+                'Access-Control-Allow-Origin', self.request.headers['Origin']
+            )
         if 'Content-Security-Policy' not in headers:
             self.set_header('Content-Security-Policy', self.content_security_policy)
         self.set_header('Content-Type', self.get_content_type())
+
+    def _is_allowed_request(self):
+        allowed_hosts = self.settings.get('allowed_hosts', [])
+        if allowed_hosts is None or len(allowed_hosts) == 0:
+            return False
+        origin = self.request.headers.get('Origin', None)
+        if origin is None:
+            return False
+        domain = urlparse(origin).netloc
+        if ':' in domain:
+            domain = domain.split(':')[0]
+        return domain in allowed_hosts
 
     # ---------------------------------------------------------------
     # Login and cookie-related

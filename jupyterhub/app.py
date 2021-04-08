@@ -1156,6 +1156,14 @@ class JupyterHub(Application):
         help="Extra settings overrides to pass to the tornado application."
     ).tag(config=True)
 
+    allowed_hosts = List(
+        Unicode(),
+        help="""List of allowed hosts.
+
+        If this config is set, JupyterHub will send 'Access-Control-Allow-Origin' for requests by the allowed host.
+        """,
+    ).tag(config=True)
+
     cleanup_servers = Bool(
         True,
         help="""Whether to shutdown single-user servers when the Hub shuts down.
@@ -2288,6 +2296,7 @@ class JupyterHub(Application):
             static_handler_class=CacheControlStaticFilesHandler,
             template_path=self.template_paths,
             template_vars=self.template_vars,
+            allowed_hosts=self.allowed_hosts,
             jinja2_env=jinja_env,
             jinja2_env_sync=jinja_env_sync,
             version_hash=version_hash,
