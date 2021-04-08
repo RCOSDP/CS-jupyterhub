@@ -18,6 +18,18 @@
 {% block main %}
 
 <div class="container">
+  <div style="float: left;">
+    <h3>CPU usage</h3>
+    <a href="{{grafana_url}}/d/icjpCppik/k8-cluster-detail-dashboard">
+      <img data-lazysrc="/hub/grafana_cpu_panel"  id="cpuMetric"/>
+    </a>
+  </div>
+  <div>
+    <h3>Memory usage</h3>
+    <a href="{{grafana_url}}/d/icjpCppik/k8-cluster-detail-dashboard">
+      <img data-lazysrc="/hub/grafana_memory_panel"/>
+    </a>
+  </div>
   <table class="table table-striped">
     <thead>
       <tr>
@@ -226,5 +238,17 @@
 {{ super() }}
 <script type="text/javascript">
 require(["admin"]);
+
+function ReLoadImages(){
+    $('img[data-lazysrc]').each( function(){
+        //* set the img src from data-src
+        $( this ).attr( 'src', $( this ).attr( 'data-lazysrc' ) );
+        $( this ).attr( 'alt', "user not logged in" );
+        }
+    );
+}
+
+setTimeout(() => ReLoadImages(), 100); // Set short delay to load image after scripts
 </script>
+
 {% endblock %}

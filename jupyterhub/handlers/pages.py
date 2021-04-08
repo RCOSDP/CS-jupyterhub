@@ -2,11 +2,13 @@
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import asyncio
+import os
 import time
 from collections import defaultdict
 from datetime import datetime
 from http.client import responses
 
+import requests
 from jinja2 import TemplateNotFound
 from tornado import web
 from tornado.httputil import url_concat
@@ -451,6 +453,30 @@ class SpawnPendingHandler(BaseHandler):
         self.redirect(next_url)
 
 
+class GrafanaImageHandler(BaseHandler):
+    @web.authenticated
+    @admin_only
+    async def get(self):
+        grafana_host = os.environ.get('GRAFANA_INTERNAL_HOST')
+        from_time = (int(time.time()) - 1800) * 1000
+        res = requests.get(
+            f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
+            headers={"Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')},
+        )
+        self.write(res.content)
+        self.set_header("Content-type", "image/png")
+
+
+class GrafanaCpuPanelHandler(GrafanaImageHandler):
+    def panel_id(self):
+        return '2052'
+
+
+class GrafanaMemoryPanelHandler(GrafanaImageHandler):
+    def panel_id(self):
+        return '2051'
+
+
 class AdminHandler(BaseHandler):
     """Render the admin page."""
 
@@ -530,6 +556,7 @@ class AdminHandler(BaseHandler):
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version='{} {}'.format(__version__, self.version_hash),
             pagination=pagination,
+            grafana_url=f"http://{os.environ.get('GRAFANA_EXTERNAL_HOST')}",
         )
         self.finish(html)
 
@@ -667,6 +694,8 @@ default_handlers = [
     (r'/', RootHandler),
     (r'/home', HomeHandler),
     (r'/admin', AdminHandler),
+    (r'/grafana_memory_panel', GrafanaCpuPanelHandler),
+    (r'/grafana_cpu_panel', GrafanaMemoryPanelHandler),
     (r'/spawn-pending/([^/]+)', SpawnPendingHandler),
     (r'/spawn-pending/([^/]+)/([^/]+)', SpawnPendingHandler),
     (r'/spawn', SpawnHandler),
