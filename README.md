@@ -6,17 +6,15 @@
 **[License](#license)** |
 **[Help and Resources](#help-and-resources)**
 
-
 # [JupyterHub](https://github.com/jupyterhub/jupyterhub)
-
 
 [![Latest PyPI version](https://img.shields.io/pypi/v/jupyterhub?logo=pypi)](https://pypi.python.org/pypi/jupyterhub)
 [![Latest conda-forge version](https://img.shields.io/conda/vn/conda-forge/jupyterhub?logo=conda-forge)](https://www.npmjs.com/package/jupyterhub)
 [![Documentation build status](https://img.shields.io/readthedocs/jupyterhub?logo=read-the-docs)](https://jupyterhub.readthedocs.org/en/latest/)
-[![TravisCI build status](https://img.shields.io/travis/com/jupyterhub/jupyterhub?logo=travis)](https://travis-ci.com/jupyterhub/jupyterhub)
+[![GitHub Workflow Status - Test](https://img.shields.io/github/workflow/status/jupyterhub/jupyterhub/Test?logo=github&label=tests)](https://github.com/jupyterhub/jupyterhub/actions)
 [![DockerHub build status](https://img.shields.io/docker/build/jupyterhub/jupyterhub?logo=docker&label=build)](https://hub.docker.com/r/jupyterhub/jupyterhub/tags)
 [![CircleCI build status](https://img.shields.io/circleci/build/github/jupyterhub/jupyterhub?logo=circleci)](https://circleci.com/gh/jupyterhub/jupyterhub)<!-- CircleCI Token: b5b65862eb2617b9a8d39e79340b0a6b816da8cc -->
-[![Test coverage of code](https://codecov.io/gh/jupyterhub/jupyterhub/branch/master/graph/badge.svg)](https://codecov.io/gh/jupyterhub/jupyterhub)
+[![Test coverage of code](https://codecov.io/gh/jupyterhub/jupyterhub/branch/main/graph/badge.svg)](https://codecov.io/gh/jupyterhub/jupyterhub)
 [![GitHub](https://img.shields.io/badge/issue_tracking-github-blue?logo=github)](https://github.com/jupyterhub/jupyterhub/issues)
 [![Discourse](https://img.shields.io/badge/help_forum-discourse-blue?logo=discourse)](https://discourse.jupyter.org/c/jupyterhub)
 [![Gitter](https://img.shields.io/badge/social_chat-gitter-blue?logo=gitter)](https://gitter.im/jupyterhub/jupyterhub)
@@ -48,11 +46,10 @@ Basic principles for operation are:
   servers.
 
 JupyterHub also provides a
-[REST API](http://petstore.swagger.io/?url=https://raw.githubusercontent.com/jupyter/jupyterhub/master/docs/rest-api.yml#/default)
+[REST API](https://petstore3.swagger.io/?url=https://raw.githubusercontent.com/jupyter/jupyterhub/HEAD/docs/rest-api.yml#/default)
 for administration of the Hub and its users.
 
 ## Installation
-
 
 ### Check prerequisites
 
@@ -60,10 +57,10 @@ for administration of the Hub and its users.
 - [Python](https://www.python.org/downloads/) 3.5 or greater
 - [nodejs/npm](https://www.npmjs.com/)
 
-  * If you are using **`conda`**, the nodejs and npm dependencies will be installed for
+  - If you are using **`conda`**, the nodejs and npm dependencies will be installed for
     you by conda.
 
-  * If you are using **`pip`**, install a recent version of
+  - If you are using **`pip`**, install a recent version of
     [nodejs/npm](https://docs.npmjs.com/getting-started/installing-node).
     For example, install it on Linux (Debian/Ubuntu) using:
 
@@ -102,7 +99,7 @@ JupyterHub can be installed with `pip`, and the proxy with `npm`:
 
 ```bash
 npm install -g configurable-http-proxy
-python3 -m pip install jupyterhub    
+python3 -m pip install jupyterhub
 ```
 
 If you plan to run notebook servers locally, you will need to install the
@@ -120,10 +117,10 @@ To start the Hub server, run the command:
 Visit `https://localhost:8000` in your browser, and sign in with your unix
 PAM credentials.
 
-*Note*: To allow multiple users to sign into the server, you will need to
-run the `jupyterhub` command as a *privileged user*, such as root.
+_Note_: To allow multiple users to sign into the server, you will need to
+run the `jupyterhub` command as a _privileged user_, such as root.
 The [wiki](https://github.com/jupyterhub/jupyterhub/wiki/Using-sudo-to-run-JupyterHub-without-root-privileges)
-describes how to run the server as a *less privileged user*, which requires
+describes how to run the server as a _less privileged user_, which requires
 more configuration of the system.
 
 ## Configuration
@@ -142,7 +139,7 @@ To generate a default config file with settings and descriptions:
 
 ### Start the Hub
 
-To start the Hub on a specific url and port ``10.0.1.2:443`` with **https**:
+To start the Hub on a specific url and port `10.0.1.2:443` with **https**:
 
     jupyterhub --ip 10.0.1.2 --port 443 --ssl-key my_ssl.key --ssl-cert my_ssl.cert
 
@@ -204,7 +201,7 @@ These accounts will be used for authentication in JupyterHub's default configura
 ## Contributing
 
 If you would like to contribute to the project, please read our
-[contributor documentation](http://jupyter.readthedocs.io/en/latest/contributor/content-contributor.html)
+[contributor documentation](https://jupyter.readthedocs.io/en/latest/contributing/content-contributor.html)
 and the [`CONTRIBUTING.md`](CONTRIBUTING.md). The `CONTRIBUTING.md` file
 explains how to set up a development installation, how to run the test suite,
 and how to contribute to documentation.
@@ -242,7 +239,7 @@ our JupyterHub [Gitter](https://gitter.im/jupyterhub/jupyterhub) channel.
 - [Reporting Issues](https://github.com/jupyterhub/jupyterhub/issues)
 - [JupyterHub tutorial](https://github.com/jupyterhub/jupyterhub-tutorial)
 - [Documentation for JupyterHub](https://jupyterhub.readthedocs.io/en/latest/) | [PDF (latest)](https://media.readthedocs.org/pdf/jupyterhub/latest/jupyterhub.pdf) | [PDF (stable)](https://media.readthedocs.org/pdf/jupyterhub/stable/jupyterhub.pdf)
-- [Documentation for JupyterHub's REST API](http://petstore.swagger.io/?url=https://raw.githubusercontent.com/jupyter/jupyterhub/master/docs/rest-api.yml#/default)
+- [Documentation for JupyterHub's REST API](https://petstore3.swagger.io/?url=https://raw.githubusercontent.com/jupyter/jupyterhub/HEAD/docs/rest-api.yml#/default)
 - [Documentation for Project Jupyter](http://jupyter.readthedocs.io/en/latest/index.html) | [PDF](https://media.readthedocs.org/pdf/jupyter/latest/jupyter.pdf)
 - [Project Jupyter website](https://jupyter.org)
 - [Project Jupyter community](https://jupyter.org/community)

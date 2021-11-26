@@ -252,6 +252,35 @@ class User:
                 await self.save_auth_state(auth_state)
         return auth_state
 
+    async def delete_spawners(self):
+        """Call spawner cleanup methods
+
+        Allows the spawner to cleanup persistent resources
+        """
+        for name in self.orm_user.orm_spawners.keys():
+            await self._delete_spawner(name)
+
+    async def _delete_spawner(self, name_or_spawner):
+        """Delete a single spawner"""
+        # always ensure full Spawner
+        # this may instantiate the Spawner if it wasn't already running,
+        # just to delete it
+        if isinstance(name_or_spawner, str):
+            spawner = self.spawners[name_or_spawner]
+        else:
+            spawner = name_or_spawner
+
+        if spawner.active:
+            raise RuntimeError(
+                f"Spawner {spawner._log_name} is active and cannot be deleted."
+            )
+        try:
+            await maybe_future(spawner.delete_forever())
+        except Exception as e:
+            self.log.exception(
+                f"Error cleaning up persistent resources on {spawner._log_name}"
+            )
+
     def all_spawners(self, include_default=True):
         """Generator yielding all my spawners
 
@@ -826,10 +855,7 @@ class User:
             try:
                 await maybe_future(spawner.run_post_stop_hook())
             except:
-                spawner.clear_state()
-                spawner.orm_spawner.state = spawner.get_state()
-                self.db.commit()
-                raise
+                self.log.exception("Error in Spawner.post_stop_hook for %s", self)
             spawner.clear_state()
             spawner.orm_spawner.state = spawner.get_state()
             self.db.commit()

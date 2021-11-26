@@ -24,6 +24,7 @@ import time
 from functools import wraps
 from subprocess import Popen
 from urllib.parse import quote
+from weakref import WeakKeyDictionary
 
 from tornado.httpclient import AsyncHTTPClient
 from tornado.httpclient import HTTPError
@@ -32,6 +33,7 @@ from tornado.ioloop import PeriodicCallback
 from traitlets import Any
 from traitlets import Bool
 from traitlets import default
+from traitlets import Dict
 from traitlets import Instance
 from traitlets import Integer
 from traitlets import observe
@@ -43,7 +45,6 @@ from .metrics import CHECK_ROUTES_DURATION_SECONDS
 from .metrics import PROXY_POLL_DURATION_SECONDS
 from .objects import Server
 from .utils import exponential_backoff
-from .utils import make_ssl_context
 from .utils import url_path_join
 from jupyterhub.traitlets import Command
 
@@ -54,11 +55,18 @@ def _one_at_a_time(method):
     If multiple concurrent calls to this method are made,
     queue them instead of allowing them to be concurrently outstanding.
     """
-    method._lock = asyncio.Lock()
+    # use weak dict for locks
+    # so that the lock is always acquired within the current asyncio loop
+    # should only be relevant in testing, where eventloops are created and destroyed often
+    method._locks = WeakKeyDictionary()
 
     @wraps(method)
     async def locked_method(*args, **kwargs):
-        async with method._lock:
+        loop = asyncio.get_event_loop()
+        lock = method._locks.get(loop, None)
+        if lock is None:
+            lock = method._locks[loop] = asyncio.Lock()
+        async with lock:
             return await method(*args, **kwargs)
 
     return locked_method
@@ -109,6 +117,26 @@ class Proxy(LoggingConfigurable):
         If True, the Hub will start the proxy and stop it.
         Set to False if the proxy is managed externally,
         such as by systemd, docker, or another service manager.
+        """,
+    )
+
+    extra_routes = Dict(
+        {},
+        config=True,
+        help="""
+        Additional routes to be maintained in the proxy.
+
+        A dictionary with a route specification as key, and
+        a URL as target. The hub will ensure this route is present
+        in the proxy.
+
+        If the hub is running in host based mode (with
+        JupyterHub.subdomain_host set), the routespec *must*
+        have a domain component (example.com/my-url/). If the
+        hub is not running in host based mode, the routespec
+        *must not* have a domain component (/my-url/).
+
+        Helpful when the hub is running in API-only mode.
         """,
     )
 
@@ -330,7 +358,7 @@ class Proxy(LoggingConfigurable):
             route = routes[self.app.hub.routespec]
             if route['target'] != hub.host:
                 self.log.warning(
-                    "Updating default route %s → %s", route['target'], hub.host
+                    "Updating Hub route %s → %s", route['target'], hub.host
                 )
                 futures.append(self.add_hub_route(hub))
 
@@ -384,6 +412,11 @@ class Proxy(LoggingConfigurable):
                     )
                     futures.append(self.add_service(service))
 
+        # Add extra routes we've been configured for
+        for routespec, url in self.extra_routes.items():
+            good_routes.add(routespec)
+            futures.append(self.add_route(routespec, url, {'extra': True}))
+
         # Now delete the routes that shouldn't be there
         for routespec in routes:
             if routespec not in good_routes:
@@ -396,7 +429,7 @@ class Proxy(LoggingConfigurable):
 
     def add_hub_route(self, hub):
         """Add the default route for the Hub"""
-        self.log.info("Adding default route for Hub: %s => %s", hub.routespec, hub.host)
+        self.log.info("Adding route for Hub: %s => %s", hub.routespec, hub.host)
         return self.add_route(hub.routespec, self.hub.host, {'hub': True})
 
     async def restore_routes(self):
@@ -450,7 +483,11 @@ class ConfigurableHTTPProxy(Proxy):
         Loaded from the CONFIGPROXY_AUTH_TOKEN env variable by default.
         """
     ).tag(config=True)
-    check_running_interval = Integer(5, config=True)
+    check_running_interval = Integer(
+        5,
+        help="Interval (in seconds) at which to check if the proxy is running.",
+        config=True,
+    )
 
     @default('auth_token')
     def _auth_token_default(self):
