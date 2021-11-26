@@ -8,7 +8,7 @@ from urllib.parse import urlparse
 
 import pytest
 from bs4 import BeautifulSoup
-from tornado import gen
+from tornado.escape import url_escape
 from tornado.httputil import url_concat
 
 from .. import orm
@@ -30,7 +30,7 @@ async def test_root_no_auth(app):
     url = ujoin(public_host(app), app.hub.base_url)
     r = await async_requests.get(url)
     r.raise_for_status()
-    assert r.url == ujoin(url, 'login')
+    assert r.url == url_concat(ujoin(url, 'login'), dict(next=app.hub.base_url))
 
 
 async def test_root_auth(app):
@@ -255,6 +255,48 @@ async def test_spawn_page_admin(app, admin_access):
         assert "Spawning server for {}".format(u.name) in r.text
 
 
+async def test_spawn_with_query_arguments(app):
+    with mock.patch.dict(app.users.settings, {'spawner_class': FormSpawner}):
+        base_url = ujoin(public_host(app), app.hub.base_url)
+        cookies = await app.login_user('jones')
+        orm_u = orm.User.find(app.db, 'jones')
+        u = app.users[orm_u]
+        await u.stop()
+        next_url = ujoin(app.base_url, 'user/jones/tree')
+        r = await async_requests.get(
+            url_concat(
+                ujoin(base_url, 'spawn'),
+                {'next': next_url, 'energy': '510keV'},
+            ),
+            cookies=cookies,
+        )
+        r.raise_for_status()
+        assert r.history
+        assert u.spawner.user_options == {
+            'energy': '510keV',
+            'notspecified': 5,
+        }
+
+
+async def test_spawn_with_query_arguments_error(app):
+    with mock.patch.dict(app.users.settings, {'spawner_class': FormSpawner}):
+        base_url = ujoin(public_host(app), app.hub.base_url)
+        cookies = await app.login_user('jones')
+        orm_u = orm.User.find(app.db, 'jones')
+        u = app.users[orm_u]
+        await u.stop()
+        next_url = ujoin(app.base_url, 'user/jones/tree')
+        r = await async_requests.get(
+            url_concat(
+                ujoin(base_url, 'spawn'),
+                {'next': next_url, 'energy': '510keV', 'illegal_argument': '42'},
+            ),
+            cookies=cookies,
+        )
+        r.raise_for_status()
+        assert "You are not allowed to specify " in r.text
+
+
 async def test_spawn_form(app):
     with mock.patch.dict(app.users.settings, {'spawner_class': FormSpawner}):
         base_url = ujoin(public_host(app), app.hub.base_url)
@@ -290,6 +332,12 @@ async def test_spawn_form_admin_access(app, admin_access):
             data={'bounds': ['-3', '3'], 'energy': '938MeV'},
         )
         r.raise_for_status()
+
+        while '/spawn-pending/' in r.url:
+            await asyncio.sleep(0.1)
+            r = await async_requests.get(r.url, cookies=cookies)
+            r.raise_for_status()
+
         assert r.history
         assert r.url.startswith(public_url(app, u))
         assert u.spawner.user_options == {
@@ -475,6 +523,58 @@ async def test_user_redirect_deprecated(app, username):
     )
 
 
+@pytest.mark.parametrize(
+    'url, params, redirected_url, form_action',
+    [
+        (
+            # spawn?param=value
+            # will encode given parameters for an unauthenticated URL in the next url
+            # the next parameter will contain the app base URL (replaces BASE_URL in tests)
+            'spawn',
+            [('param', 'value')],
+            '/hub/login?next={{BASE_URL}}hub%2Fspawn%3Fparam%3Dvalue',
+            '/hub/login?next={{BASE_URL}}hub%2Fspawn%3Fparam%3Dvalue',
+        ),
+        (
+            # login?param=fromlogin&next=encoded(/hub/spawn?param=value)
+            # will drop parameters given to the login page, passing only the next url
+            'login',
+            [('param', 'fromlogin'), ('next', '/hub/spawn?param=value')],
+            '/hub/login?param=fromlogin&next=%2Fhub%2Fspawn%3Fparam%3Dvalue',
+            '/hub/login?next=%2Fhub%2Fspawn%3Fparam%3Dvalue',
+        ),
+        (
+            # login?param=value&anotherparam=anothervalue
+            # will drop parameters given to the login page, and use an empty next url
+            'login',
+            [('param', 'value'), ('anotherparam', 'anothervalue')],
+            '/hub/login?param=value&anotherparam=anothervalue',
+            '/hub/login?next=',
+        ),
+        (
+            # login
+            # simplest case, accessing the login URL, gives an empty next url
+            'login',
+            [],
+            '/hub/login',
+            '/hub/login?next=',
+        ),
+    ],
+)
+async def test_login_page(app, url, params, redirected_url, form_action):
+    url = url_concat(url, params)
+    r = await get_page(url, app)
+    redirected_url = redirected_url.replace('{{BASE_URL}}', url_escape(app.base_url))
+    assert r.url.endswith(redirected_url)
+    # now the login.html rendered template must include the given parameters in the form
+    # action URL, including the next URL
+    page = BeautifulSoup(r.text, "html.parser")
+    form = page.find("form", method="post")
+    action = form.attrs['action']
+    form_action = form_action.replace('{{BASE_URL}}', url_escape(app.base_url))
+    assert action.endswith(form_action)
+
+
 async def test_login_fail(app):
     name = 'wash'
     base_url = public_url(app)
@@ -492,8 +592,7 @@ async def test_login_strip(app):
     base_url = public_url(app)
     called_with = []
 
-    @gen.coroutine
-    def mock_authenticate(handler, data):
+    async def mock_authenticate(handler, data):
         called_with.append(data)
 
     with mock.patch.object(app.authenticator, 'authenticate', mock_authenticate):
@@ -505,37 +604,54 @@ async def test_login_strip(app):
 
 
 @pytest.mark.parametrize(
-    'running, next_url, location',
+    'running, next_url, location, params',
     [
         # default URL if next not specified, for both running and not
-        (True, '', ''),
-        (False, '', ''),
+        (True, '', '', None),
+        (False, '', '', None),
         # next_url is respected
-        (False, '/hub/admin', '/hub/admin'),
-        (False, '/user/other', '/hub/user/other'),
-        (False, '/absolute', '/absolute'),
-        (False, '/has?query#andhash', '/has?query#andhash'),
+        (False, '/hub/admin', '/hub/admin', None),
+        (False, '/user/other', '/hub/user/other', None),
+        (False, '/absolute', '/absolute', None),
+        (False, '/has?query#andhash', '/has?query#andhash', None),
         # next_url outside is not allowed
-        (False, 'relative/path', ''),
-        (False, 'https://other.domain', ''),
-        (False, 'ftp://other.domain', ''),
-        (False, '//other.domain', ''),
-        (False, '///other.domain/triple', ''),
-        (False, '\\\\other.domain/backslashes', ''),
+        (False, 'relative/path', '', None),
+        (False, 'https://other.domain', '', None),
+        (False, 'ftp://other.domain', '', None),
+        (False, '//other.domain', '', None),
+        (False, '///other.domain/triple', '', None),
+        (False, '\\\\other.domain/backslashes', '', None),
+        # params are handled correctly (ignored if ?next= specified)
+        (
+            True,
+            '/hub/admin?left=1&right=2',
+            'hub/admin?left=1&right=2',
+            {"left": "abc"},
+        ),
+        (False, '/hub/admin', 'hub/admin', [('left', 1), ('right', 2)]),
+        (True, '', '', {"keep": "yes"}),
+        (False, '', '', {"keep": "yes"}),
     ],
 )
-async def test_login_redirect(app, running, next_url, location):
+async def test_login_redirect(app, running, next_url, location, params):
     cookies = await app.login_user('river')
     user = app.users['river']
     if location:
         location = ujoin(app.base_url, location)
     elif running:
+        # location not specified,
         location = user.url
+        if params:
+            location = url_concat(location, params)
     else:
         # use default url
         location = ujoin(app.base_url, 'hub/spawn')
+        if params:
+            location = url_concat(location, params)
 
     url = 'login'
+    if params:
+        url = url_concat(url, params)
     if next_url:
         if '//' not in next_url and next_url.startswith('/'):
             next_url = ujoin(app.base_url, next_url, '')
@@ -550,7 +666,73 @@ async def test_login_redirect(app, running, next_url, location):
     r = await get_page(url, app, cookies=cookies, allow_redirects=False)
     r.raise_for_status()
     assert r.status_code == 302
-    assert location == r.headers['Location']
+    assert r.headers["Location"] == location
+
+
+@pytest.mark.parametrize(
+    'location, next, extra_params',
+    [
+        (
+            "{base_url}hub/spawn?a=5",
+            None,
+            {"a": "5"},
+        ),  # no ?next= given, preserve params
+        ("/x", "/x", {"a": "5"}),  # ?next=given, params ignored
+        (
+            "/x?b=10",
+            "/x?b=10",
+            {"a": "5"},
+        ),  # ?next=given with params, additional params ignored
+    ],
+)
+async def test_next_url(app, user, location, next, extra_params):
+    params = {}
+    if extra_params:
+        params.update(extra_params)
+    if next:
+        params["next"] = next
+    url = url_concat("/", params)
+    cookies = await app.login_user("monster")
+
+    # location can be a string template
+    location = location.format(base_url=app.base_url)
+
+    r = await get_page(url, app, cookies=cookies, allow_redirects=False)
+    r.raise_for_status()
+    assert r.status_code == 302
+    assert r.headers["Location"] == location
+
+
+async def test_next_url_params_sequence(app, user):
+    """Test each step of / -> login -> spawn
+
+    and whether they preserve url params
+    """
+    params = {"xyz": "5"}
+    # first request: root page, with params, not logged in
+    r = await get_page("/?xyz=5", app, allow_redirects=False)
+    r.raise_for_status()
+    location = r.headers["Location"]
+
+    # next page: login
+    cookies = await app.login_user(user.name)
+    assert location == url_concat(
+        ujoin(app.base_url, "/hub/login"), {"next": ujoin(app.base_url, "/hub/?xyz=5")}
+    )
+    r = await async_requests.get(
+        public_host(app) + location, cookies=cookies, allow_redirects=False
+    )
+    r.raise_for_status()
+    location = r.headers["Location"]
+
+    # after login, redirect back
+    assert location == ujoin(app.base_url, "/hub/?xyz=5")
+    r = await async_requests.get(
+        public_host(app) + location, cookies=cookies, allow_redirects=False
+    )
+    r.raise_for_status()
+    location = r.headers["Location"]
+    assert location == ujoin(app.base_url, "/hub/spawn?xyz=5")
 
 
 async def test_auto_login(app, request):
@@ -564,14 +746,18 @@ async def test_auto_login(app, request):
     )
     # no auto_login: end up at /hub/login
     r = await async_requests.get(base_url)
-    assert r.url == public_url(app, path='hub/login')
+    assert r.url == url_concat(
+        public_url(app, path="hub/login"), {"next": app.hub.base_url}
+    )
     # enable auto_login: redirect from /hub/login to /hub/dummy
     authenticator = Authenticator(auto_login=True)
     authenticator.login_url = lambda base_url: ujoin(base_url, 'dummy')
 
     with mock.patch.dict(app.tornado_settings, {'authenticator': authenticator}):
         r = await async_requests.get(base_url)
-    assert r.url == public_url(app, path='hub/dummy')
+    assert r.url == url_concat(
+        public_url(app, path="hub/dummy"), {"next": app.hub.base_url}
+    )
 
 
 async def test_auto_login_logout(app):
@@ -645,7 +831,7 @@ async def test_shutdown_on_logout(app, shutdown_on_logout):
     assert spawner.ready == (not shutdown_on_logout)
 
 
-async def test_login_no_whitelist_adds_user(app):
+async def test_login_no_allowed_adds_user(app):
     auth = app.authenticator
     mock_add_user = mock.Mock()
     with mock.patch.object(auth, 'add_user', mock_add_user):
@@ -844,8 +1030,7 @@ async def test_pre_spawn_start_exc_no_form(app):
     exc = "pre_spawn_start error"
 
     # throw exception from pre_spawn_start
-    @gen.coroutine
-    def mock_pre_spawn_start(user, spawner):
+    async def mock_pre_spawn_start(user, spawner):
         raise Exception(exc)
 
     with mock.patch.object(app.authenticator, 'pre_spawn_start', mock_pre_spawn_start):
@@ -860,8 +1045,7 @@ async def test_pre_spawn_start_exc_options_form(app):
     exc = "pre_spawn_start error"
 
     # throw exception from pre_spawn_start
-    @gen.coroutine
-    def mock_pre_spawn_start(user, spawner):
+    async def mock_pre_spawn_start(user, spawner):
         raise Exception(exc)
 
     with mock.patch.dict(

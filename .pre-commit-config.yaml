@@ -3,8 +3,8 @@ repos:
   rev: v1.9.0
   hooks:
   - id: reorder-python-imports
-- repo: https://github.com/ambv/black
-  rev: 19.10b0
+- repo: https://github.com/psf/black
+  rev: 20.8b1
   hooks:
   - id: black
 - repo: https://github.com/pre-commit/pre-commit-hooks
@@ -17,3 +17,4 @@ repos:
   - id: check-executables-have-shebangs
   - id: requirements-txt-fixer
   - id: flake8
+exclude: ^helm/

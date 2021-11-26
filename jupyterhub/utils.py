@@ -21,16 +21,21 @@ from hmac import compare_digest
 from operator import itemgetter
 
 from async_generator import aclosing
-from async_generator import async_generator
-from async_generator import asynccontextmanager
-from async_generator import yield_
-from tornado import gen
 from tornado import ioloop
 from tornado import web
 from tornado.httpclient import AsyncHTTPClient
 from tornado.httpclient import HTTPError
 from tornado.log import app_log
 from tornado.platform.asyncio import to_asyncio_future
+
+# For compatibility with python versions 3.6 or earlier.
+# asyncio.Task.all_tasks() is fully moved to asyncio.all_tasks() starting with 3.9. Also applies to current_task.
+try:
+    asyncio_all_tasks = asyncio.all_tasks
+    asyncio_current_task = asyncio.current_task
+except AttributeError as e:
+    asyncio_all_tasks = asyncio.Task.all_tasks
+    asyncio_current_task = asyncio.Task.current_task
 
 
 def random_port():
@@ -66,7 +71,7 @@ def can_connect(ip, port):
 
     Return True if we can connect, False otherwise.
     """
-    if ip in {'', '0.0.0.0'}:
+    if ip in {'', '0.0.0.0', '::'}:
         ip = '127.0.0.1'
     try:
         socket.create_connection((ip, port)).close()
@@ -79,12 +84,12 @@ def can_connect(ip, port):
 
 
 def make_ssl_context(keyfile, certfile, cafile=None, verify=True, check_hostname=True):
-    """Setup context for starting an https server or making requests over ssl.
-    """
+    """Setup context for starting an https server or making requests over ssl."""
     if not keyfile or not certfile:
         return None
     purpose = ssl.Purpose.SERVER_AUTH if verify else ssl.Purpose.CLIENT_AUTH
     ssl_context = ssl.create_default_context(purpose, cafile=cafile)
+    ssl_context.load_default_certs()
     ssl_context.load_cert_chain(certfile, keyfile)
     ssl_context.check_hostname = check_hostname
     return ssl_context
@@ -99,7 +104,7 @@ async def exponential_backoff(
     timeout=10,
     timeout_tolerance=0.1,
     *args,
-    **kwargs
+    **kwargs,
 ):
     """
     Exponentially backoff until `pass_func` is true.
@@ -172,14 +177,15 @@ async def exponential_backoff(
         # this prevents overloading any single tornado loop iteration with
         # too many things
         dt = min(max_wait, remaining, random.uniform(0, start_wait * scale))
-        scale *= scale_factor
-        await gen.sleep(dt)
+        if dt < max_wait:
+            scale *= scale_factor
+        await asyncio.sleep(dt)
     raise TimeoutError(fail_message)
 
 
 async def wait_for_server(ip, port, timeout=10):
     """Wait for any server to show up at ip:port."""
-    if ip in {'', '0.0.0.0'}:
+    if ip in {'', '0.0.0.0', '::'}:
         ip = '127.0.0.1'
     await exponential_backoff(
         lambda: can_connect(ip, port),
@@ -444,7 +450,6 @@ def print_stacks(file=sys.stderr):
     # local imports because these will not be used often,
     # no need to add them to startup
     import asyncio
-    import resource
     import traceback
     from .log import coroutine_frames
 
@@ -478,7 +483,7 @@ def print_stacks(file=sys.stderr):
     # also show asyncio tasks, if any
     # this will increase over time as we transition from tornado
     # coroutines to native `async def`
-    tasks = asyncio.Task.all_tasks()
+    tasks = asyncio_all_tasks()
     if tasks:
         print("AsyncIO tasks: %i" % len(tasks))
         for task in tasks:
@@ -506,28 +511,12 @@ def maybe_future(obj):
         return asyncio.wrap_future(obj)
     else:
         # could also check for tornado.concurrent.Future
-        # but with tornado >= 5 tornado.Future is asyncio.Future
+        # but with tornado >= 5.1 tornado.Future is asyncio.Future
         f = asyncio.Future()
         f.set_result(obj)
         return f
 
 
-@asynccontextmanager
-@async_generator
-async def not_aclosing(coro):
-    """An empty context manager for Python < 3.5.2
-    which lacks the `aclose` method on async iterators
-    """
-    await yield_(await coro)
-
-
-if sys.version_info < (3, 5, 2):
-    # Python 3.5.1 is missing the aclose method on async iterators,
-    # so we can't close them
-    aclosing = not_aclosing
-
-
-@async_generator
 async def iterate_until(deadline_future, generator):
     """An async generator that yields items from a generator
     until a deadline future resolves
@@ -552,7 +541,7 @@ async def iterate_until(deadline_future, generator):
             )
             if item_future.done():
                 try:
-                    await yield_(item_future.result())
+                    yield item_future.result()
                 except (StopAsyncIteration, asyncio.CancelledError):
                     break
             elif deadline_future.done():
@@ -580,7 +569,7 @@ def utcnow():
 def _parse_accept_header(accept):
     """
     Parse the Accept header *accept*
-    
+
     Return a list with 3-tuples of
     [(str(media_type), dict(params), float(q_value)),] ordered by q values.
     If the accept header includes vendor-specific types like::

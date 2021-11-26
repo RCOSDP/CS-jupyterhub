@@ -2,7 +2,6 @@
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import asyncio
-import copy
 import json
 import math
 import random
@@ -27,14 +26,12 @@ from tornado.httputil import url_concat
 from tornado.ioloop import IOLoop
 from tornado.log import app_log
 from tornado.web import addslash
-from tornado.web import MissingArgumentError
 from tornado.web import RequestHandler
 
 from .. import __version__
 from .. import orm
 from ..metrics import PROXY_ADD_DURATION_SECONDS
 from ..metrics import PROXY_DELETE_DURATION_SECONDS
-from ..metrics import ProxyAddStatus
 from ..metrics import ProxyDeleteStatus
 from ..metrics import RUNNING_SERVERS
 from ..metrics import SERVER_POLL_DURATION_SECONDS
@@ -43,6 +40,7 @@ from ..metrics import SERVER_STOP_DURATION_SECONDS
 from ..metrics import ServerPollStatus
 from ..metrics import ServerSpawnStatus
 from ..metrics import ServerStopStatus
+from ..metrics import TOTAL_USERS
 from ..objects import Server
 from ..spawner import LocalProcessSpawner
 from ..user import User
@@ -214,9 +212,25 @@ class BaseHandler(RequestHandler):
             self.set_header(
                 'Access-Control-Allow-Headers', 'accept, content-type, authorization'
             )
+        if self._is_allowed_request():
+            self.set_header(
+                'Access-Control-Allow-Origin', self.request.headers['Origin']
+            )
         if 'Content-Security-Policy' not in headers:
             self.set_header('Content-Security-Policy', self.content_security_policy)
         self.set_header('Content-Type', self.get_content_type())
+
+    def _is_allowed_request(self):
+        allowed_hosts = self.settings.get('allowed_hosts', [])
+        if allowed_hosts is None or len(allowed_hosts) == 0:
+            return False
+        origin = self.request.headers.get('Origin', None)
+        if origin is None:
+            return False
+        domain = urlparse(origin).netloc
+        if ':' in domain:
+            domain = domain.split(':')[0]
+        return domain in allowed_hosts
 
     # ---------------------------------------------------------------
     # Login and cookie-related
@@ -456,6 +470,7 @@ class BaseHandler(RequestHandler):
             # not found, create and register user
             u = orm.User(name=username)
             self.db.add(u)
+            TOTAL_USERS.inc()
             self.db.commit()
             user = self._user_from_orm(u)
         return user
@@ -492,7 +507,7 @@ class BaseHandler(RequestHandler):
         self.clear_cookie(
             'jupyterhub-services',
             path=url_path_join(self.base_url, 'services'),
-            **kwargs
+            **kwargs,
         )
         # Reset _jupyterhub_user
         self._jupyterhub_user = None
@@ -637,9 +652,22 @@ class BaseHandler(RequestHandler):
                 next_url,
             )
 
+        # this is where we know if next_url is coming from ?next= param or we are using a default url
+        if next_url:
+            next_url_from_param = True
+        else:
+            next_url_from_param = False
+
         if not next_url:
-            # custom default URL
-            next_url = default or self.default_url
+            # custom default URL, usually passed because user landed on that page but was not logged in
+            if default:
+                next_url = default
+            else:
+                # As set in jupyterhub_config.py
+                if callable(self.default_url):
+                    next_url = self.default_url(self)
+                else:
+                    next_url = self.default_url
 
         if not next_url:
             # default URL after login
@@ -654,7 +682,44 @@ class BaseHandler(RequestHandler):
                     next_url = url_path_join(self.hub.base_url, 'spawn')
             else:
                 next_url = url_path_join(self.hub.base_url, 'home')
+
+        if not next_url_from_param:
+            # when a request made with ?next=... assume all the params have already been encoded
+            # otherwise, preserve params from the current request across the redirect
+            next_url = self.append_query_parameters(next_url, exclude=['next'])
         return next_url
+
+    def append_query_parameters(self, url, exclude=None):
+        """Append the current request's query parameters to the given URL.
+
+        Supports an extra optional parameter ``exclude`` that when provided must
+        contain a list of parameters to be ignored, i.e. these parameters will
+        not be added to the URL.
+
+        This is important to avoid infinite loops with the next parameter being
+        added over and over, for instance.
+
+        The default value for ``exclude`` is an array with "next". This is useful
+        as most use cases in JupyterHub (all?) won't want to include the next
+        parameter twice (the next parameter is added elsewhere to the query
+        parameters).
+
+        :param str url: a URL
+        :param list exclude: optional list of parameters to be ignored, defaults to
+        a list with "next" (to avoid redirect-loops)
+        :rtype (str)
+        """
+        if exclude is None:
+            exclude = ['next']
+        if self.request.query:
+            query_string = [
+                param
+                for param in parse_qsl(self.request.query)
+                if param[0] not in exclude
+            ]
+            if query_string:
+                url = url_concat(url, query_string)
+        return url
 
     async def auth_to_user(self, authenticated, user=None):
         """Persist data from .authenticate() or .refresh_user() to the User database
@@ -676,9 +741,10 @@ class BaseHandler(RequestHandler):
             raise ValueError("Username doesn't match! %s != %s" % (username, user.name))
 
         if user is None:
-            new_user = username not in self.users
-            user = self.user_from_username(username)
+            user = self.find_user(username)
+            new_user = user is None
             if new_user:
+                user = self.user_from_username(username)
                 await maybe_future(self.authenticator.add_user(user))
         # Only set `admin` if the authenticator returned an explicit value.
         if admin is not None and admin != user.admin:
@@ -877,7 +943,7 @@ class BaseHandler(RequestHandler):
                 self.log.error(
                     "Stopping %s to avoid inconsistent state", user_server_name
                 )
-                await user.stop()
+                await user.stop(server_name)
                 PROXY_ADD_DURATION_SECONDS.labels(status='failure').observe(
                     time.perf_counter() - proxy_add_start_time
                 )
@@ -910,6 +976,9 @@ class BaseHandler(RequestHandler):
                 self.settings['failure_count'] = 0
                 return
             # spawn failed, increment count and abort if limit reached
+            SERVER_SPAWN_DURATION_SECONDS.labels(
+                status=ServerSpawnStatus.failure
+            ).observe(time.perf_counter() - spawn_start_time)
             self.settings.setdefault('failure_count', 0)
             self.settings['failure_count'] += 1
             failure_count = self.settings['failure_count']
@@ -942,13 +1011,16 @@ class BaseHandler(RequestHandler):
             # waiting_for_response indicates server process has started,
             # but is yet to become responsive.
             if spawner._spawn_pending and not spawner._waiting_for_response:
-                # still in Spawner.start, which is taking a long time
-                # we shouldn't poll while spawn is incomplete.
-                self.log.warning(
-                    "User %s is slow to start (timeout=%s)",
-                    user_server_name,
-                    self.slow_spawn_timeout,
-                )
+                # If slow_spawn_timeout is intentionally disabled then we
+                # don't need to log a warning, just return.
+                if self.slow_spawn_timeout > 0:
+                    # still in Spawner.start, which is taking a long time
+                    # we shouldn't poll while spawn is incomplete.
+                    self.log.warning(
+                        "User %s is slow to start (timeout=%s)",
+                        user_server_name,
+                        self.slow_spawn_timeout,
+                    )
                 return
 
             # start has finished, but the server hasn't come up
@@ -1085,7 +1157,10 @@ class BaseHandler(RequestHandler):
         except gen.TimeoutError:
             # hit timeout, but stop is still pending
             self.log.warning(
-                "User %s:%s server is slow to stop", user.name, server_name
+                "User %s:%s server is slow to stop (timeout=%s)",
+                user.name,
+                server_name,
+                self.slow_stop_timeout,
             )
 
         # return handle on the future for hooking up callbacks
@@ -1108,16 +1183,36 @@ class BaseHandler(RequestHandler):
             "<a href='{home}'>home page</a>.".format(home=home)
         )
 
-    def get_template(self, name):
-        """Return the jinja template object for a given name"""
-        return self.settings['jinja2_env'].get_template(name)
+    def get_template(self, name, sync=False):
+        """
+        Return the jinja template object for a given name
 
-    def render_template(self, name, **ns):
+        If sync is True, we return a Template that is compiled without async support.
+        Only those can be used in synchronous code.
+
+        If sync is False, we return a Template that is compiled with async support
+        """
+        if sync:
+            key = 'jinja2_env_sync'
+        else:
+            key = 'jinja2_env'
+        return self.settings[key].get_template(name)
+
+    def render_template(self, name, sync=False, **ns):
+        """
+        Render jinja2 template
+
+        If sync is set to True, we return an awaitable
+        If sync is set to False, we render the template & return a string
+        """
         template_ns = {}
         template_ns.update(self.template_namespace)
         template_ns.update(ns)
-        template = self.get_template(name)
-        return template.render(**template_ns)
+        template = self.get_template(name, sync)
+        if sync:
+            return template.render(**template_ns)
+        else:
+            return template.render_async(**template_ns)
 
     @property
     def template_namespace(self):
@@ -1143,6 +1238,8 @@ class BaseHandler(RequestHandler):
             return accessible_services
         for service in self.services.values():
             if not service.url:
+                continue
+            if not service.display:
                 continue
             accessible_services.append(service)
         return accessible_services
@@ -1190,17 +1287,19 @@ class BaseHandler(RequestHandler):
             # Content-Length must be recalculated.
             self.clear_header('Content-Length')
 
-        # render the template
+        # render_template is async, but write_error can't be!
+        # so we run it sync here, instead of making a sync version of render_template
+
         try:
-            html = self.render_template('%s.html' % status_code, **ns)
+            html = self.render_template('%s.html' % status_code, sync=True, **ns)
         except TemplateNotFound:
             self.log.debug("No template for %d", status_code)
             try:
-                html = self.render_template('error.html', **ns)
+                html = self.render_template('error.html', sync=True, **ns)
             except:
                 # In this case, any side effect must be avoided.
                 ns['no_spawner_check'] = True
-                html = self.render_template('error.html', **ns)
+                html = self.render_template('error.html', sync=True, **ns)
 
         self.write(html)
 
@@ -1404,10 +1503,14 @@ class UserUrlHandler(BaseHandler):
 
         # if request is expecting JSON, assume it's an API request and fail with 503
         # because it won't like the redirect to the pending page
-        if get_accepted_mimetype(
-            self.request.headers.get('Accept', ''),
-            choices=['application/json', 'text/html'],
-        ) == 'application/json' or 'api' in user_path.split('/'):
+        if (
+            get_accepted_mimetype(
+                self.request.headers.get('Accept', ''),
+                choices=['application/json', 'text/html'],
+            )
+            == 'application/json'
+            or 'api' in user_path.split('/')
+        ):
             self._fail_api_request(user_name, server_name)
             return
 
@@ -1433,7 +1536,7 @@ class UserUrlHandler(BaseHandler):
         self.set_status(503)
 
         auth_state = await user.get_auth_state()
-        html = self.render_template(
+        html = await self.render_template(
             "not_running.html",
             user=user,
             server_name=server_name,
@@ -1488,7 +1591,7 @@ class UserUrlHandler(BaseHandler):
         if redirects:
             self.log.warning("Redirect loop detected on %s", self.request.uri)
             # add capped exponential backoff where cap is 10s
-            await gen.sleep(min(1 * (2 ** redirects), 10))
+            await asyncio.sleep(min(1 * (2 ** redirects), 10))
             # rewrite target url with new `redirects` query value
             url_parts = urlparse(target)
             query_parts = parse_qs(url_parts.query)
