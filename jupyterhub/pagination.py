@@ -19,7 +19,7 @@ class Pagination(Configurable):
     )
 
     max_per_page = Integer(
-        250,
+        2000,
         config=True,
         help="Maximum number of entries per page for paginated results.",
     )

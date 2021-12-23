@@ -44,7 +44,7 @@ jupyterhub -f /etc/jupyterhub/jupyterhub_config.py
 ```
 
 The IPython documentation provides additional information on the
-[config system](http://ipython.readthedocs.io/en/stable/development/config)
+[config system](http://ipython.readthedocs.io/en/stable/development/config.html)
 that Jupyter uses.
 
 ## Configure using command line options
@@ -56,18 +56,18 @@ To display all command line options that are available for configuration:
 ```
 
 Configuration using the command line options is done when launching JupyterHub.
-For example, to start JupyterHub on ``10.0.1.2:443`` with https, you
+For example, to start JupyterHub on `10.0.1.2:443` with https, you
 would enter:
 
 ```bash
     jupyterhub --ip 10.0.1.2 --port 443 --ssl-key my_ssl.key --ssl-cert my_ssl.cert
 ```
 
-All configurable options may technically be set on the command-line,
+All configurable options may technically be set on the command line,
 though some are inconvenient to type. To set a particular configuration
 parameter, `c.Class.trait`, you would use the command line option,
 `--Class.trait`, when starting JupyterHub. For example, to configure the
-`c.Spawner.notebook_dir` trait from the command-line, use the
+`c.Spawner.notebook_dir` trait from the command line, use the
 `--Spawner.notebook_dir` option:
 
 ```bash
@@ -88,13 +88,13 @@ meant as illustration, are:
 
 ## Run the proxy separately
 
-This is *not* strictly necessary, but useful in many cases.  If you
-use a custom proxy (e.g. Traefik), this also not needed.
+This is _not_ strictly necessary, but useful in many cases. If you
+use a custom proxy (e.g. Traefik), this is also not needed.
 
-Connections to user servers go through the proxy, and *not* the hub
-itself.  If the proxy stays running when the hub restarts (for
-maintenance, re-configuration, etc.), then use connections are not
-interrupted.  For simplicity, by default the hub starts the proxy
+Connections to user servers go through the proxy, and _not_ the hub
+itself. If the proxy stays running when the hub restarts (for
+maintenance, re-configuration, etc.), then user connections are not
+interrupted. For simplicity, by default the hub starts the proxy
 automatically, so if the hub restarts, the proxy restarts, and user
-connections are interrupted.  It is easy to run the proxy separately,
+connections are interrupted. It is easy to run the proxy separately,
 for information see [the separate proxy page](../reference/separate-proxy).

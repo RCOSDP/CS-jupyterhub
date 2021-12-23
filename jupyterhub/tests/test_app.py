@@ -1,5 +1,6 @@
 """Test the JupyterHub entry point"""
 import binascii
+import logging
 import os
 import re
 import sys
@@ -199,6 +200,18 @@ def test_cookie_secret_env(tmpdir, request):
     assert not os.path.exists(hub.cookie_secret_file)
 
 
+def test_cookie_secret_string_():
+    cfg = Config()
+
+    cfg.JupyterHub.cookie_secret = "not hex"
+    with pytest.raises(ValueError):
+        JupyterHub(config=cfg)
+
+    cfg.JupyterHub.cookie_secret = "abc123"
+    app = JupyterHub(config=cfg)
+    assert app.cookie_secret == binascii.a2b_hex('abc123')
+
+
 async def test_load_groups(tmpdir, request):
     to_load = {
         'blue': ['cyclops', 'rogue', 'wolverine'],
@@ -317,3 +330,41 @@ def test_url_config(hub_config, expected):
     # validate additional properties
     for key, value in expected.items():
         assert getattr(app, key) == value
+
+
+@pytest.mark.parametrize(
+    "base_url, hub_routespec, expected_routespec, should_warn, bad_prefix",
+    [
+        (None, None, "/", False, False),
+        ("/", "/", "/", False, False),
+        ("/base", "/base", "/base/", False, False),
+        ("/", "/hub", "/hub/", True, False),
+        (None, "hub/api", "/hub/api/", True, False),
+        ("/base", "/hub/", "/hub/", True, True),
+        (None, "/hub/api/health", "/hub/api/health/", True, True),
+    ],
+)
+def test_hub_routespec(
+    base_url, hub_routespec, expected_routespec, should_warn, bad_prefix, caplog
+):
+    cfg = Config()
+    if base_url:
+        cfg.JupyterHub.base_url = base_url
+    if hub_routespec:
+        cfg.JupyterHub.hub_routespec = hub_routespec
+    with caplog.at_level(logging.WARNING):
+        app = JupyterHub(config=cfg, log=logging.getLogger())
+        app.init_hub()
+    hub = app.hub
+    assert hub.routespec == expected_routespec
+
+    if should_warn:
+        assert "custom route for Hub" in caplog.text
+        assert hub_routespec in caplog.text
+    else:
+        assert "custom route for Hub" not in caplog.text
+
+    if bad_prefix:
+        assert "may not receive" in caplog.text
+    else:
+        assert "may not receive" not in caplog.text

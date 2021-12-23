@@ -70,9 +70,8 @@ def check_db_locks(func):
     The decorator relies on an instance of JupyterHubApp being the first
     argument to the decorated function.
 
-    Example
-    -------
-
+    Examples
+    --------
         @check_db_locks
         def api_request(app, *api_path, **kwargs):
 
@@ -121,7 +120,7 @@ def auth_header(db, name):
     """Return header with user's API authorization token."""
     user = find_user(db, name)
     if user is None:
-        user = add_user(db, name=name)
+        raise KeyError(f"No such user: {name}")
     token = user.new_api_token()
     return {'Authorization': 'token %s' % token}
 

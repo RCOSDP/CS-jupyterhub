@@ -9,10 +9,13 @@ with JupyterHub authentication mixins enabled.
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import asyncio
-import importlib
 import json
+import logging
 import os
 import random
+import secrets
+import sys
+import warnings
 from datetime import datetime
 from datetime import timezone
 from textwrap import dedent
@@ -23,7 +26,6 @@ from jinja2 import FunctionLoader
 from tornado import ioloop
 from tornado.httpclient import AsyncHTTPClient
 from tornado.httpclient import HTTPRequest
-from tornado.web import HTTPError
 from tornado.web import RequestHandler
 from traitlets import Any
 from traitlets import Bool
@@ -94,14 +96,31 @@ class JupyterHubLoginHandlerMixin:
 
     @staticmethod
     def get_user(handler):
-        """alternative get_current_user to query the Hub"""
-        # patch in HubAuthenticated class for querying the Hub for cookie authentication
-        if HubAuthenticatedHandler not in handler.__class__.__bases__:
+        """alternative get_current_user to query the Hub
+
+        Thus shouldn't be called anymore because HubAuthenticatedHandler
+        should have already overridden get_current_user().
+
+        Keep here to protect uncommon circumstance of multiple BaseHandlers
+        from missing auth.
+
+        e.g. when multiple BaseHandler classes are used.
+        """
+        if HubAuthenticatedHandler not in handler.__class__.mro():
+            warnings.warn(
+                f"Expected to see HubAuthenticatedHandler in {handler.__class__}.mro(),"
+                " patching in at call time. Hub authentication is still applied.",
+                RuntimeWarning,
+                stacklevel=2,
+            )
+            # patch HubAuthenticated into the instance
             handler.__class__ = type(
                 handler.__class__.__name__,
                 (HubAuthenticatedHandler, handler.__class__),
                 {},
             )
+            # patch into the class itself so this doesn't happen again for the same class
+            patch_base_handler(handler.__class__)
         return handler.get_current_user()
 
     @classmethod
@@ -243,7 +262,7 @@ class SingleUserNotebookAppMixin(Configurable):
     cookie_secret = Bytes()
 
     def _cookie_secret_default(self):
-        return os.urandom(32)
+        return secrets.token_bytes(32)
 
     user = CUnicode().tag(config=True)
     group = CUnicode().tag(config=True)
@@ -673,6 +692,97 @@ def detect_base_package(App):
     return None
 
 
+def _nice_cls_repr(cls):
+    """Nice repr of classes, e.g. 'module.submod.Class'
+
+    Also accepts tuples of classes
+    """
+    return f"{cls.__module__}.{cls.__name__}"
+
+
+def patch_base_handler(BaseHandler, log=None):
+    """Patch HubAuthenticated into a base handler class
+
+    so anything inheriting from BaseHandler uses Hub authentication.
+    This works *even after* subclasses have imported and inherited from BaseHandler.
+
+    .. versionadded: 1.5
+        Made available as an importable utility
+    """
+    if log is None:
+        log = logging.getLogger()
+
+    if HubAuthenticatedHandler not in BaseHandler.__bases__:
+        new_bases = (HubAuthenticatedHandler,) + BaseHandler.__bases__
+        log.info(
+            "Patching auth into {mod}.{name}({old_bases}) -> {name}({new_bases})".format(
+                mod=BaseHandler.__module__,
+                name=BaseHandler.__name__,
+                old_bases=', '.join(
+                    _nice_cls_repr(cls) for cls in BaseHandler.__bases__
+                ),
+                new_bases=', '.join(_nice_cls_repr(cls) for cls in new_bases),
+            )
+        )
+        BaseHandler.__bases__ = new_bases
+        # We've now inserted our class as a parent of BaseHandler,
+        # but we also need to ensure BaseHandler *itself* doesn't
+        # override the public tornado API methods we have inserted.
+        # If they are defined in BaseHandler, explicitly replace them with our methods.
+        for name in ("get_current_user", "get_login_url"):
+            if name in BaseHandler.__dict__:
+                log.debug(
+                    f"Overriding {BaseHandler}.{name} with HubAuthenticatedHandler.{name}"
+                )
+                method = getattr(HubAuthenticatedHandler, name)
+                setattr(BaseHandler, name, method)
+    return BaseHandler
+
+
+def _patch_app_base_handlers(app):
+    """Patch Hub Authentication into the base handlers of an app
+
+    Patches HubAuthenticatedHandler into:
+
+    - App.base_handler_class (if defined)
+    - jupyter_server's JupyterHandler (if already imported)
+    - notebook's IPythonHandler (if already imported)
+    """
+    BaseHandler = app_base_handler = getattr(app, "base_handler_class", None)
+
+    base_handlers = []
+    if BaseHandler is not None:
+        base_handlers.append(BaseHandler)
+
+    # patch juptyer_server and notebook handlers if they have been imported
+    for base_handler_name in [
+        "jupyter_server.base.handlers.JupyterHandler",
+        "notebook.base.handlers.IPythonHandler",
+    ]:
+        modname, _ = base_handler_name.rsplit(".", 1)
+        if modname in sys.modules:
+            base_handlers.append(import_item(base_handler_name))
+
+    if not base_handlers:
+        pkg = detect_base_package(app.__class__)
+        if pkg == "jupyter_server":
+            BaseHandler = import_item("jupyter_server.base.handlers.JupyterHandler")
+        elif pkg == "notebook":
+            BaseHandler = import_item("notebook.base.handlers.IPythonHandler")
+        else:
+            raise ValueError(
+                "{}.base_handler_class must be defined".format(app.__class__.__name__)
+            )
+        base_handlers.append(BaseHandler)
+
+    # patch-in HubAuthenticatedHandler to base handler classes
+    for BaseHandler in base_handlers:
+        patch_base_handler(BaseHandler)
+
+    # return the first entry
+    return base_handlers[0]
+
+
 def make_singleuser_app(App):
     """Make and return a singleuser notebook app
 
@@ -691,21 +801,12 @@ def make_singleuser_app(App):
     """
 
     empty_parent_app = App()
+    log = empty_parent_app.log
 
     # detect base classes
     LoginHandler = empty_parent_app.login_handler_class
     LogoutHandler = empty_parent_app.logout_handler_class
-    BaseHandler = getattr(empty_parent_app, "base_handler_class", None)
-    if BaseHandler is None:
-        pkg = detect_base_package(App)
-        if pkg == "jupyter_server":
-            BaseHandler = import_item("jupyter_server.base.handlers.JupyterHandler")
-        elif pkg == "notebook":
-            BaseHandler = import_item("notebook.base.handlers.IPythonHandler")
-        else:
-            raise ValueError(
-                "{}.base_handler_class must be defined".format(App.__name__)
-            )
+    BaseHandler = _patch_app_base_handlers(empty_parent_app)
 
     # create Handler classes from mixins + bases
     class JupyterHubLoginHandler(JupyterHubLoginHandlerMixin, LoginHandler):
@@ -734,5 +835,12 @@ def make_singleuser_app(App):
         login_handler_class = JupyterHubLoginHandler
         logout_handler_class = JupyterHubLogoutHandler
         oauth_callback_handler_class = OAuthCallbackHandler
+
+        def initialize(self, *args, **kwargs):
+            result = super().initialize(*args, **kwargs)
+            # run patch again after initialize, so extensions have already been loaded
+            # probably a no-op most of the time
+            _patch_app_base_handlers(self)
+            return result
 
     return SingleUserNotebookApp
