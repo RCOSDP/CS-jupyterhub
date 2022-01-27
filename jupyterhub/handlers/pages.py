@@ -528,7 +528,7 @@ class AdminHandler(BaseHandler):
         # get User.col.desc() order objects
         ordered = [getattr(c, o)() for c, o in zip(cols, orders)]
 
-        query = self.db.query(orm.User).outerjoin(orm.Spawner).distinct(orm.User.id)
+        query = self.db.query(orm.User)
         subquery = query.subquery("users")
         users = (
             self.db.query(orm.User)

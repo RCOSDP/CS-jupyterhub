@@ -176,13 +176,13 @@ require(["jquery", "moment", "jhapi", "utils"], function (
 
   $("#edit-user-dialog")
     .find("#mail-address")
-    .keyup(function(){
-          $(this).change();
-      });
+    .keyup(function () {
+      $(this).change();
+    });
 
   $("#edit-user-dialog")
     .find("#mail-address")
-    .change(function() {
+    .change(function () {
       var dialog = $("#edit-user-dialog");
       var mailAddress = dialog.find("#mail-address").val();
       var valid = mailAddress.match(/^\S+\@\S+$/) != null;
@@ -315,7 +315,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
       });
     });
 
-  $(".mail-address-checkbox").change(function() {
+  $(".mail-address-checkbox").change(function () {
     var checkedCount = $(".mail-address-checkbox:checked").length;
     if ($(".mail-address-checkbox").length - checkedCount == 0) {
       $("#mail-address-check-all").removeClass("fa-square");
@@ -327,7 +327,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
     $("#send-notification").attr("disabled", checkedCount == 0);
   });
 
-  $("#mail-address-check-all").click(function() {
+  $("#mail-address-check-all").click(function () {
     if ($("#mail-address-check-all").hasClass("fa-check-square")) {
       $("#mail-address-check-all").addClass("fa-square");
       $("#mail-address-check-all").removeClass("fa-check-square");
@@ -341,27 +341,31 @@ require(["jquery", "moment", "jhapi", "utils"], function (
     }
   });
 
-  $("#send-notification").click(function() {
+  $("#send-notification").click(function () {
     var dialog = $("#send-notification-dialog");
     dialog.find(".notification-loading").show();
     dialog.find(".notification-form").hide();
     api.get_notification_templates({
-      success: function(data) {
+      success: function (data) {
         $(".notification-loading").hide();
         var default_templates = data.templates.filter((t) => t.default);
         if (default_templates.length > 0) {
           if (default_templates[0].subject !== null) {
-            dialog.find(".notification-title-input").val(default_templates[0].subject);
+            dialog
+              .find(".notification-title-input")
+              .val(default_templates[0].subject);
           }
-          dialog.find(".notification-body-input").val(default_templates[0].body);
+          dialog
+            .find(".notification-body-input")
+            .val(default_templates[0].body);
         }
         if (data.templates && data.templates.length > 0) {
           var template_items = $("#notification-template-items");
           template_items.empty();
-          data.templates.forEach(function(template) {
+          data.templates.forEach(function (template) {
             notification_templates[template.name] = template;
             template_items.append($("<option></option>").append(template.name));
-          })
+          });
           if (default_templates.length > 0) {
             template_items.val(default_templates[0].name);
           }
@@ -380,22 +384,24 @@ require(["jquery", "moment", "jhapi", "utils"], function (
 
   $("#send-notification-dialog")
     .find(".notification-input")
-    .keyup(function(){
-        $(this).change();
+    .keyup(function () {
+      $(this).change();
     });
 
-  $("#notification-template-insert").click(function() {
-    var template = notification_templates[$("#notification-template-items").val()];
+  $("#notification-template-insert").click(function () {
+    var template =
+      notification_templates[$("#notification-template-items").val()];
     var text = $(".notification-body-input");
     var v = text.val();
-    var textBefore = v.substring(0, text.prop('selectionStart'));
-    var textAfter  = v.substring(text.prop('selectionEnd'), v.length);
+    var textBefore = v.substring(0, text.prop("selectionStart"));
+    var textAfter = v.substring(text.prop("selectionEnd"), v.length);
 
     text.val(textBefore + template.body + textAfter);
   });
 
-  $("#notification-template-reset").click(function() {
-    var template = notification_templates[$("#notification-template-items").val()];
+  $("#notification-template-reset").click(function () {
+    var template =
+      notification_templates[$("#notification-template-items").val()];
     $(".notification-body-input").val(template.body);
     if (template.subject !== null) {
       $(".notification-title-input").val(template.subject);
@@ -404,7 +410,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
 
   $("#send-notification-dialog")
     .find(".notification-input")
-    .change(function() {
+    .change(function () {
       var dialog = $("#send-notification-dialog");
       var title = dialog.find(".notification-title-input").val();
       var body = dialog.find(".notification-body-input").val();
@@ -412,15 +418,15 @@ require(["jquery", "moment", "jhapi", "utils"], function (
       dialog.find(".send-notification-button").prop("disabled", !valid);
     });
 
-  $(".send-notification-button").click(function() {
+  $(".send-notification-button").click(function () {
     var to = [];
-    $(".mail-address-checkbox:checked").each(function(i, el) {
+    $(".mail-address-checkbox:checked").each(function (i, el) {
       to.push(getRow($(el)).data("user"));
     });
     api.send_notification({
       to: to,
-      title: $('.notification-title-input').val(),
-      body: $('.notification-body-input').val(),
+      title: $(".notification-title-input").val(),
+      body: $(".notification-body-input").val(),
     });
   });
 });

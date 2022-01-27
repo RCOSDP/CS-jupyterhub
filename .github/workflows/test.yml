@@ -202,8 +202,6 @@ jobs:
         if: ${{ matrix.db }}
         run: |
           if [ "${{ matrix.db }}" == "mysql" ]; then
-              sudo apt-get update
-              sudo apt-get install -y mysql-client
               DB=mysql bash ci/docker-db.sh
               DB=mysql bash ci/init-db.sh
           fi

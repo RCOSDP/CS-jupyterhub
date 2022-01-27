@@ -156,7 +156,7 @@ define(["jquery", "utils"], function ($, utils) {
     this.api_request("shutdown", options);
   };
 
-  JHAPI.prototype.send_notification = function(props, options) {
+  JHAPI.prototype.send_notification = function (props, options) {
     options = options || {};
     options = update(options, { type: "PUT" });
     if (props) {
@@ -165,7 +165,7 @@ define(["jquery", "utils"], function ($, utils) {
     this.api_request(utils.url_path_join("notifications"), options);
   };
 
-  JHAPI.prototype.get_notification_templates = function(options) {
+  JHAPI.prototype.get_notification_templates = function (options) {
     options = options || {};
     options = update(options, { type: "GET" });
     this.api_request(utils.url_path_join("notifications/templates"), options);
