@@ -167,11 +167,14 @@ class Pagination(Configurable):
 
         links = ['<nav>']
         links.append('<ul class="pagination">')
+        per_page = self.per_page
 
         if self.page > 1:
             prev_page = self.page - 1
             links.append(
-                '<li><a href="?page={prev_page}">«</a></li>'.format(prev_page=prev_page)
+                '<li><a href="?page={prev_page}&per_page={per_page}">«</a></li>'.format(
+                    prev_page=prev_page, per_page=per_page
+                )
             )
         else:
             links.append(
@@ -193,13 +196,17 @@ class Pagination(Configurable):
                 )
             else:
                 links.append(
-                    '<li><a href="?page={page}">{page}</a></li>'.format(page=page)
+                    '<li><a href="?page={page}&per_page={per_page}">{page}</a></li>'.format(
+                        page=page, per_page=per_page
+                    )
                 )
 
         if self.page >= 1 and self.page < self.total_pages:
             next_page = self.page + 1
             links.append(
-                '<li><a href="?page={next_page}">»</a></li>'.format(next_page=next_page)
+                '<li><a href="?page={next_page}&per_page={per_page}">»</a></li>'.format(
+                    next_page=next_page, per_page=per_page
+                )
             )
         else:
             links.append(
