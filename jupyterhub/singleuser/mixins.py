@@ -18,6 +18,7 @@ import sys
 import warnings
 from datetime import datetime
 from datetime import timezone
+from importlib import import_module
 from textwrap import dedent
 from urllib.parse import urlparse
 
@@ -50,6 +51,17 @@ from ..utils import exponential_backoff
 from ..utils import isoformat
 from ..utils import make_ssl_context
 from ..utils import url_path_join
+
+
+def _bool_env(key):
+    """Cast an environment variable to bool
+
+    0, empty, or unset is False; All other values are True.
+    """
+    if os.environ.get(key, "") in {"", "0"}:
+        return False
+    else:
+        return True
 
 
 # Authenticate requests with the Hub
@@ -150,7 +162,6 @@ class OAuthCallbackHandlerMixin(HubOAuthCallbackHandler):
 aliases = {
     'user': 'SingleUserNotebookApp.user',
     'group': 'SingleUserNotebookApp.group',
-    'cookie-name': 'HubAuth.cookie_name',
     'hub-prefix': 'SingleUserNotebookApp.hub_prefix',
     'hub-host': 'SingleUserNotebookApp.hub_host',
     'hub-api-url': 'SingleUserNotebookApp.hub_api_url',
@@ -279,6 +290,10 @@ class SingleUserNotebookAppMixin(Configurable):
     def _user_changed(self, change):
         self.log.name = change.new
 
+    @default("default_url")
+    def _default_url(self):
+        return os.environ.get("JUPYTERHUB_DEFAULT_URL", "/tree/")
+
     hub_host = Unicode().tag(config=True)
 
     hub_prefix = Unicode('/hub/').tag(config=True)
@@ -361,7 +376,26 @@ class SingleUserNotebookAppMixin(Configurable):
         """,
     ).tag(config=True)
 
-    @validate('notebook_dir')
+    @default("disable_user_config")
+    def _default_disable_user_config(self):
+        return _bool_env("JUPYTERHUB_DISABLE_USER_CONFIG")
+
+    @default("root_dir")
+    def _default_root_dir(self):
+        if os.environ.get("JUPYTERHUB_ROOT_DIR"):
+            proposal = {"value": os.environ["JUPYTERHUB_ROOT_DIR"]}
+            # explicitly call validator, not called on default values
+            return self._notebook_dir_validate(proposal)
+        else:
+            return os.getcwd()
+
+    # notebook_dir is used by the classic notebook server
+    # root_dir is the future in jupyter server
+    @default("notebook_dir")
+    def _default_notebook_dir(self):
+        return self._default_root_dir()
+
+    @validate("notebook_dir", "root_dir")
     def _notebook_dir_validate(self, proposal):
         value = os.path.expanduser(proposal['value'])
         # Strip any trailing slashes
@@ -376,6 +410,13 @@ class SingleUserNotebookAppMixin(Configurable):
         if not os.path.isdir(value):
             raise TraitError("No such notebook dir: %r" % value)
         return value
+
+    @default('log_level')
+    def _log_level_default(self):
+        if _bool_env("JUPYTERHUB_DEBUG"):
+            return logging.DEBUG
+        else:
+            return logging.INFO
 
     @default('log_datefmt')
     def _log_datefmt_default(self):
@@ -520,7 +561,7 @@ class SingleUserNotebookAppMixin(Configurable):
                 url=self.hub_activity_url,
                 method='POST',
                 headers={
-                    "Authorization": "token {}".format(self.hub_auth.api_token),
+                    "Authorization": f"token {self.hub_auth.api_token}",
                     "Content-Type": "application/json",
                 },
                 body=json.dumps(
@@ -566,10 +607,34 @@ class SingleUserNotebookAppMixin(Configurable):
             t = self.hub_activity_interval * (1 + 0.2 * (random.random() - 0.5))
             await asyncio.sleep(t)
 
+    def _log_app_versions(self):
+        """Log application versions at startup
+
+        Logs versions of jupyterhub and singleuser-server base versions (jupyterlab, jupyter_server, notebook)
+        """
+        self.log.info(f"Starting jupyterhub single-user server version {__version__}")
+
+        # don't log these package versions
+        seen = {"jupyterhub", "traitlets", "jupyter_core", "builtins"}
+
+        for cls in self.__class__.mro():
+            module_name = cls.__module__.partition(".")[0]
+            if module_name not in seen:
+                seen.add(module_name)
+                try:
+                    mod = import_module(module_name)
+                    mod_version = getattr(mod, "__version__")
+                except Exception:
+                    mod_version = ""
+                self.log.info(
+                    f"Extending {cls.__module__}.{cls.__name__} from {module_name} {mod_version}"
+                )
+
     def initialize(self, argv=None):
         # disable trash by default
         # this can be re-enabled by config
         self.config.FileContentsManager.delete_to_trash = False
+        self._log_app_versions()
         return super().initialize(argv)
 
     def start(self):
@@ -675,6 +740,18 @@ class SingleUserNotebookAppMixin(Configurable):
         orig_loader = env.loader
         env.loader = ChoiceLoader([FunctionLoader(get_page), orig_loader])
 
+    def load_server_extensions(self):
+        # Loading LabApp sets $JUPYTERHUB_API_TOKEN on load, which is incorrect
+        r = super().load_server_extensions()
+        # clear the token in PageConfig at this step
+        # so that cookie auth is used
+        # FIXME: in the future,
+        # it would probably make sense to set page_config.token to the token
+        # from the current request.
+        if 'page_config_data' in self.web_app.settings:
+            self.web_app.settings['page_config_data']['token'] = ''
+        return r
+
 
 def detect_base_package(App):
     """Detect the base package for an App class
@@ -771,7 +848,7 @@ def _patch_app_base_handlers(app):
             BaseHandler = import_item("notebook.base.handlers.IPythonHandler")
         else:
             raise ValueError(
-                "{}.base_handler_class must be defined".format(app.__class__.__name__)
+                f"{app.__class__.__name__}.base_handler_class must be defined"
             )
         base_handlers.append(BaseHandler)
 

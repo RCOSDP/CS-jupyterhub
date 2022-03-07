@@ -16,7 +16,18 @@ c.Authenticator.allowed_users = {'mal', 'zoe', 'inara', 'kaylee'}
 Users in the `allowed_users` set are added to the Hub database when the Hub is
 started.
 
+```{warning}
+If this configuration value is not set, then **all authenticated users will be allowed into your hub**.
+```
+
 ## Configure admins (`admin_users`)
+
+```{note}
+As of JupyterHub 2.0, the full permissions of `admin_users`
+should not be required.
+Instead, you can assign [roles][] to users or groups
+with only the scopes they require.
+```
 
 Admin users of JupyterHub, `admin_users`, can add and remove users from
 the user `allowed_users` set. `admin_users` can take actions on other users'

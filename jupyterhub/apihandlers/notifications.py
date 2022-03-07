@@ -3,13 +3,13 @@ import json
 
 from tornado import web
 
-from ..utils import admin_only
+from ..scopes import needs_scope
 from ..utils import maybe_future
 from .base import APIHandler
 
 
 class NotificationsHandler(APIHandler):
-    @admin_only
+    @needs_scope('admin:users')
     async def put(self):
         """PUT /api/notifications send notification to users
 
@@ -48,7 +48,7 @@ class NotificationsHandler(APIHandler):
 
 
 class TemplatesHandler(APIHandler):
-    @admin_only
+    @needs_scope('admin:users')
     async def get(self):
         """GET /api/notifications/templates get templates for notifications"""
         templates = [self.normalize(t) for t in self.app.notifier.templates]

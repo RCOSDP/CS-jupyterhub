@@ -44,6 +44,7 @@ from . import utils
 from .metrics import CHECK_ROUTES_DURATION_SECONDS
 from .metrics import PROXY_POLL_DURATION_SECONDS
 from .objects import Server
+from .utils import AnyTimeoutError
 from .utils import exponential_backoff
 from .utils import url_path_join
 from jupyterhub.traitlets import Command
@@ -341,10 +342,8 @@ class Proxy(LoggingConfigurable):
         if not routes:
             self.log.debug("Fetching routes to check")
             routes = await self.get_all_routes()
-        # log info-level that we are starting the route-checking
-        # this may help diagnose performance issues,
-        # as we are about
-        self.log.info("Checking routes")
+
+        self.log.debug("Checking routes")
 
         user_routes = {path for path, r in routes.items() if 'user' in r['data']}
         futures = []
@@ -509,7 +508,7 @@ class ConfigurableHTTPProxy(Proxy):
         if self.app.internal_ssl:
             proto = 'https'
 
-        return "{proto}://{url}".format(proto=proto, url=url)
+        return f"{proto}://{url}"
 
     command = Command(
         'configurable-http-proxy',
@@ -565,7 +564,7 @@ class ConfigurableHTTPProxy(Proxy):
         pid_file = os.path.abspath(self.pid_file)
         self.log.warning("Found proxy pid file: %s", pid_file)
         try:
-            with open(pid_file, "r") as f:
+            with open(pid_file) as f:
                 pid = int(f.read().strip())
         except ValueError:
             self.log.warning("%s did not appear to contain a pid", pid_file)
@@ -683,17 +682,6 @@ class ConfigurableHTTPProxy(Proxy):
             cmd.extend(['--ssl-cert', self.ssl_cert])
         if self.app.internal_ssl:
             cmd.extend(self._get_ssl_options())
-        if self.app.statsd_host:
-            cmd.extend(
-                [
-                    '--statsd-host',
-                    self.app.statsd_host,
-                    '--statsd-port',
-                    str(self.app.statsd_port),
-                    '--statsd-prefix',
-                    self.app.statsd_prefix + '.chp',
-                ]
-            )
         # Warn if SSL is not used
         if ' --ssl' not in ' '.join(cmd):
             self.log.warning(
@@ -722,15 +710,16 @@ class ConfigurableHTTPProxy(Proxy):
         def _check_process():
             status = self.proxy_process.poll()
             if status is not None:
-                e = RuntimeError("Proxy failed to start with exit code %i" % status)
-                raise e from None
+                with self.proxy_process:
+                    e = RuntimeError("Proxy failed to start with exit code %i" % status)
+                    raise e from None
 
         for server in (public_server, api_server):
             for i in range(10):
                 _check_process()
                 try:
                     await server.wait_up(1)
-                except TimeoutError:
+                except AnyTimeoutError:
                     continue
                 else:
                     break
@@ -833,7 +822,7 @@ class ConfigurableHTTPProxy(Proxy):
         req = HTTPRequest(
             url,
             method=method,
-            headers={'Authorization': 'token {}'.format(self.auth_token)},
+            headers={'Authorization': f'token {self.auth_token}'},
             body=body,
             connect_timeout=3,  # default: 20s
             request_timeout=10,  # default: 20s
@@ -855,13 +844,13 @@ class ConfigurableHTTPProxy(Proxy):
                     )
                     return False  # a falsy return value make exponential_backoff retry
                 else:
-                    self.log.error("api_request to proxy failed: {0}".format(e))
+                    self.log.error(f"api_request to proxy failed: {e}")
                     # An unhandled error here will help the hub invoke cleanup logic
                     raise
 
         result = await exponential_backoff(
             _wait_for_api_request,
-            'Repeated api_request to proxy path "{}" failed.'.format(path),
+            f'Repeated api_request to proxy path "{path}" failed.',
             timeout=30,
         )
         return result

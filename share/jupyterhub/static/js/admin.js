@@ -429,4 +429,15 @@ require(["jquery", "moment", "jhapi", "utils"], function (
       body: $(".notification-body-input").val(),
     });
   });
+
+  function ReLoadImages() {
+    $('img[data-lazysrc]').each(function () {
+          //* set the img src from data-src
+          $(this).attr('src', $(this).attr('data-lazysrc'));
+          $(this).attr('alt', "user not logged in");
+        }
+    );
+  }
+
+  setTimeout(() => ReLoadImages(), 100); // Set short delay to load image after scripts
 });
