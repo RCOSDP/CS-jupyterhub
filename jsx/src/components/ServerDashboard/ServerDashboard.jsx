@@ -16,6 +16,8 @@ const ServerDashboard = (props) => {
     usernameAsc = (e) => e.sort((a, b) => (a.name < b.name ? 1 : -1)),
     adminDesc = (e) => e.sort((a) => (a.admin ? -1 : 1)),
     adminAsc = (e) => e.sort((a) => (a.admin ? 1 : -1)),
+    mailDesc = (e) => e.sort((a) => (a.mail ? -1 : 1)),
+    mailAsc = (e) => e.sort((a) => (a.mail ? 1 : -1)),
     dateDesc = (e) =>
       e.sort((a, b) =>
         new Date(a.last_activity) - new Date(b.last_activity) > 0 ? -1 : 1
@@ -127,6 +129,14 @@ const ServerDashboard = (props) => {
                   testid="admin-sort"
                 />
               </th>
+              <th id="mail-header">
+                Mail Address{" "}
+                <SortHandler
+                  sorts={{ asc: mailAsc, desc: mailDesc }}
+                  callback={(method) => setSortMethod(() => method)}
+                  testid="mail-sort"
+                />
+              </th>
               <th id="last-activity-header">
                 Last Activity{" "}
                 <SortHandler
@@ -154,7 +164,10 @@ const ServerDashboard = (props) => {
                 </Button>
               </td>
               <td></td>
-              <td></td>
+              <td>
+                <i id="mail-address-check-all" className="fa fa-square"></i>
+                <button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>
+              </td>
               <td>
                 {/* Start all servers */}
                 <Button
@@ -240,9 +253,14 @@ const ServerDashboard = (props) => {
               </td>
             </tr>
             {user_data.map((e, i) => (
-              <tr key={i + "row"} className="user-row">
+              <tr key={i + "row"} className="user-row" data-mail-address={e.mail_address ? e.mail_address : ""}>
                 <td data-testid="user-row-name">{e.name}</td>
                 <td data-testid="user-row-admin">{e.admin ? "admin" : ""}</td>
+                <td data-testid="user-row-mail">{
+                  (!e.server && e.mail_address) ? (<><input type="checkbox" className="mail-address-checkbox" style={{marginRight: "10px"}}/>{e.mail_address}</>)
+                    : <>-</>
+                  }
+                </td>
                 <td data-testid="user-row-last-activity">
                   {e.last_activity ? timeSince(e.last_activity) : "Never"}
                 </td>

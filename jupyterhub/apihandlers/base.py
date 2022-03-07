@@ -278,6 +278,7 @@ class APIHandler(BaseHandler):
                 'pending',
                 'created',
                 'last_activity',
+                'mail_address'
             },
             'read:users:name': {'kind', 'name', 'admin'},
             'read:users:groups': {'kind', 'name', 'groups'},
