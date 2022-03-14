@@ -25,9 +25,10 @@ const withAPI = withProps(() => ({
   deleteGroup: (name) => jhapiRequest("/groups/" + name, "DELETE"),
   addUsers: (usernames, admin) =>
     jhapiRequest("/users", "POST", { usernames, admin }),
-  editUser: (username, updated_username, admin) =>
+  editUser: (username, updated_username, updated_mail_address, admin) =>
     jhapiRequest("/users/" + username, "PATCH", {
       name: updated_username,
+      mail_address: updated_mail_address,
       admin,
     }),
   deleteUser: (username) => jhapiRequest("/users/" + username, "DELETE"),

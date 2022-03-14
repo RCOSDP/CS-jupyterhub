@@ -2,7 +2,7 @@ import React, { useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
 import PropTypes from "prop-types";
 
-import { Button } from "react-bootstrap";
+import { Button, Modal } from "react-bootstrap";
 import { Link } from "react-router-dom";
 import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
 
@@ -41,6 +41,11 @@ const ServerDashboard = (props) => {
   var slice = [page * limit, limit];
 
   const dispatch = useDispatch();
+
+  const [show, setShow] = useState(false);
+
+  const handleClose = () => setShow(false);
+  const handleShow = () => setShow(true);
 
   var {
     updateUsers,
@@ -94,6 +99,7 @@ const ServerDashboard = (props) => {
       ) : (
         <></>
       )}
+
       <div style={{float: "left"}}>
         <h3>CPU usage</h3>
         <a href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}>
@@ -166,7 +172,11 @@ const ServerDashboard = (props) => {
               <td></td>
               <td>
                 <i id="mail-address-check-all" className="fa fa-square"></i>
-                <button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>
+                {/*<button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>*/}
+                <Button id="send-notification" variant="light" style={{marginLeft: "10px"}} onClick={handleShow}>
+                    Notify
+                </Button>
+
               </td>
               <td>
                 {/* Start all servers */}
@@ -330,6 +340,7 @@ const ServerDashboard = (props) => {
                         state: {
                           username: e.name,
                           has_admin: e.admin,
+                          mail_address: e.mail_address,
                         },
                       })
                     }
@@ -350,6 +361,38 @@ const ServerDashboard = (props) => {
         />
         <br></br>
       </div>
+      <Modal animation={true} show={show} onHide={handleClose}>
+        <Modal.Header closeButton>
+          <Modal.Title>Send Notification</Modal.Title>
+        </Modal.Header>
+        <Modal.Body id="send-notification-dialog">
+            <div class="notification-form">
+                <div class="notification-templates">
+                    Template: <select id="notification-template-items"></select>
+                    <button style={{marginLeft: "10px"}} class="btn btn-default btn-xs" id="notification-template-reset">Set</button>
+                    <button style={{marginLeft: "10px"}} class="btn btn-default btn-xs" id="notification-template-insert">Insert to body</button>
+                </div>
+                <div>
+                    <label for="notification-title">Subject</label>
+                    <input type="text" name="notification-title" id="notification-title"
+                           class="form-control notification-input notification-title-input"></input>
+                </div>
+                <div>
+                    <label for="notification-body">Body</label>
+                    <textarea name="notification-body" id="notification-body"
+                              class="form-control notification-input notification-body-input" rows="10"></textarea>
+                </div>
+            </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={handleClose}>
+            Cancel
+          </Button>
+          <Button variant="primary" onClick={handleClose}>
+            Send
+          </Button>
+        </Modal.Footer>
+      </Modal>
     </div>
   );
 };

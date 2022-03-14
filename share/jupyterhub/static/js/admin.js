@@ -317,14 +317,14 @@ require(["jquery", "moment", "jhapi", "utils"], function (
 
   $(".mail-address-checkbox").change(function () {
     var checkedCount = $(".mail-address-checkbox:checked").length;
-    if ($(".mail-address-checkbox").length - checkedCount == 0) {
+    if ($(".mail-address-checkbox").length - checkedCount === 0) {
       $("#mail-address-check-all").removeClass("fa-square");
       $("#mail-address-check-all").addClass("fa-check-square");
     } else {
       $("#mail-address-check-all").addClass("fa-square");
       $("#mail-address-check-all").removeClass("fa-check-square");
     }
-    $("#send-notification").attr("disabled", checkedCount == 0);
+    $("#send-notification").attr("disabled", checkedCount === 0);
   });
 
   $("#mail-address-check-all").click(function () {
@@ -341,45 +341,48 @@ require(["jquery", "moment", "jhapi", "utils"], function (
     }
   });
 
+  $("#send-notification").attr("disabled", true);
+
   $("#send-notification").click(function () {
-    var dialog = $("#send-notification-dialog");
-    dialog.find(".notification-loading").show();
-    dialog.find(".notification-form").hide();
-    api.get_notification_templates({
-      success: function (data) {
-        $(".notification-loading").hide();
-        var default_templates = data.templates.filter((t) => t.default);
-        if (default_templates.length > 0) {
-          if (default_templates[0].subject !== null) {
-            dialog
-              .find(".notification-title-input")
-              .val(default_templates[0].subject);
-          }
-          dialog
-            .find(".notification-body-input")
-            .val(default_templates[0].body);
-        }
-        if (data.templates && data.templates.length > 0) {
-          var template_items = $("#notification-template-items");
-          template_items.empty();
-          data.templates.forEach(function (template) {
-            notification_templates[template.name] = template;
-            template_items.append($("<option></option>").append(template.name));
-          });
+    setTimeout(() => { // use setTimeout to wait dialog is shown
+      var dialog = $("#send-notification-dialog");
+      dialog.find(".notification-loading").show();
+      dialog.find(".notification-form").hide();
+      api.get_notification_templates({
+        success: function (data) {
+          $(".notification-loading").hide();
+          var default_templates = data.templates.filter((t) => t.default);
           if (default_templates.length > 0) {
-            template_items.val(default_templates[0].name);
+            if (default_templates[0].subject !== null) {
+              dialog
+                .find(".notification-title-input")
+                .val(default_templates[0].subject);
+            }
+            dialog
+              .find(".notification-body-input")
+              .val(default_templates[0].body);
           }
-          dialog.find(".notification-templates").show();
-        } else {
-          dialog.find(".notification-templates").hide();
-        }
-        $(".notification-form").show();
-      },
-    });
-    dialog.find(".send-notification-button").prop("disabled", true);
-    dialog.find(".notification-title-input").val("");
-    dialog.find(".notification-body-input").val("");
-    dialog.modal();
+          if (data.templates && data.templates.length > 0) {
+            var template_items = $("#notification-template-items");
+            template_items.empty();
+            data.templates.forEach(function (template) {
+              notification_templates[template.name] = template;
+              template_items.append($("<option></option>").append(template.name));
+            });
+            if (default_templates.length > 0) {
+              template_items.val(default_templates[0].name);
+            }
+            dialog.find(".notification-templates").show();
+          } else {
+            dialog.find(".notification-templates").hide();
+          }
+          $(".notification-form").show();
+        },
+      });
+      dialog.find(".send-notification-button").prop("disabled", true);
+      dialog.find(".notification-title-input").val("");
+      dialog.find(".notification-body-input").val("");
+    }, 0);
   });
 
   $("#send-notification-dialog")
@@ -388,7 +391,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
       $(this).change();
     });
 
-  $("#notification-template-insert").click(function () {
+  $(document).on('click', "#notification-template-insert", function () {
     var template =
       notification_templates[$("#notification-template-items").val()];
     var text = $(".notification-body-input");
@@ -399,7 +402,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
     text.val(textBefore + template.body + textAfter);
   });
 
-  $("#notification-template-reset").click(function () {
+  $(document).on('click', "#notification-template-reset", function () {
     var template =
       notification_templates[$("#notification-template-items").val()];
     $(".notification-body-input").val(template.body);

@@ -30,3 +30,19 @@
 tr.noborder > td {
   border: none !important;
 }
+
+.modal-backdrop.show {
+    opacity: .5;
+}
+
+.modal.show {
+  opacity: 1;
+}
+
+.modal.show .modal-dialog{
+  opacity: 1;
+  -webkit-transform: translate(0,0%) !important;
+  -ms-transform: translate(0,0%) !important;
+  -o-transform: translate(0,0%) !important;
+  transform: translate(0,0%) !important;
+}
