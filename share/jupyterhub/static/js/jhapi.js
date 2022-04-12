@@ -37,6 +37,7 @@ define(["jquery", "utils"], function ($, utils) {
     options = ajax_defaults(options || {});
     var url = utils.url_path_join(
       this.base_url,
+      "hub",
       "api",
       utils.encode_uri_components(path)
     );
