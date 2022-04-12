@@ -344,7 +344,8 @@ require(["jquery", "moment", "jhapi", "utils"], function (
   $("#send-notification").attr("disabled", true);
 
   $("#send-notification").click(function () {
-    setTimeout(() => { // use setTimeout to wait dialog is shown
+    setTimeout(() => {
+      // use setTimeout to wait dialog is shown
       var dialog = $("#send-notification-dialog");
       dialog.find(".notification-loading").show();
       dialog.find(".notification-form").hide();
@@ -367,7 +368,9 @@ require(["jquery", "moment", "jhapi", "utils"], function (
             template_items.empty();
             data.templates.forEach(function (template) {
               notification_templates[template.name] = template;
-              template_items.append($("<option></option>").append(template.name));
+              template_items.append(
+                $("<option></option>").append(template.name)
+              );
             });
             if (default_templates.length > 0) {
               template_items.val(default_templates[0].name);
@@ -379,19 +382,22 @@ require(["jquery", "moment", "jhapi", "utils"], function (
           $(".notification-form").show();
         },
       });
+
       dialog.find(".send-notification-button").prop("disabled", true);
       dialog.find(".notification-title-input").val("");
       dialog.find(".notification-body-input").val("");
     }, 0);
   });
 
-  $("#send-notification-dialog")
-    .find(".notification-input")
-    .keyup(function () {
+  $(document).on(
+    "keyup",
+    "#send-notification-dialog .notification-input",
+    function () {
       $(this).change();
-    });
+    }
+  );
 
-  $(document).on('click', "#notification-template-insert", function () {
+  $(document).on("click", "#notification-template-insert", function () {
     var template =
       notification_templates[$("#notification-template-items").val()];
     var text = $(".notification-body-input");
@@ -402,7 +408,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
     text.val(textBefore + template.body + textAfter);
   });
 
-  $(document).on('click', "#notification-template-reset", function () {
+  $(document).on("click", "#notification-template-reset", function () {
     var template =
       notification_templates[$("#notification-template-items").val()];
     $(".notification-body-input").val(template.body);
@@ -411,20 +417,22 @@ require(["jquery", "moment", "jhapi", "utils"], function (
     }
   });
 
-  $("#send-notification-dialog")
-    .find(".notification-input")
-    .change(function () {
+  $(document).on(
+    "change",
+    "#send-notification-dialog .notification-input",
+    function () {
       var dialog = $("#send-notification-dialog");
       var title = dialog.find(".notification-title-input").val();
       var body = dialog.find(".notification-body-input").val();
       var valid = title.length > 0 && body.length > 0;
       dialog.find(".send-notification-button").prop("disabled", !valid);
-    });
+    }
+  );
 
-  $(".send-notification-button").click(function () {
+  $(document).on("click", ".send-notification-button", function () {
     var to = [];
-    $(".mail-address-checkbox:checked").each(function (i, el) {
-      to.push(getRow($(el)).data("user"));
+    $(".mail-address-checkbox:checked").each(function () {
+      to.push($(this).val());
     });
     api.send_notification({
       to: to,
@@ -434,12 +442,11 @@ require(["jquery", "moment", "jhapi", "utils"], function (
   });
 
   function ReLoadImages() {
-    $('img[data-lazysrc]').each(function () {
-          //* set the img src from data-src
-          $(this).attr('src', $(this).attr('data-lazysrc'));
-          $(this).attr('alt', "user not logged in");
-        }
-    );
+    $("img[data-lazysrc]").each(function () {
+      //* set the img src from data-src
+      $(this).attr("src", $(this).attr("data-lazysrc"));
+      $(this).attr("alt", "user not logged in");
+    });
   }
 
   setTimeout(() => ReLoadImages(), 100); // Set short delay to load image after scripts

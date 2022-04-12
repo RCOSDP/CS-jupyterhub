@@ -100,16 +100,20 @@ const ServerDashboard = (props) => {
         <></>
       )}
 
-      <div style={{float: "left"}}>
+      <div style={{ float: "left" }}>
         <h3>CPU usage</h3>
-        <a href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}>
-          <img data-lazysrc="/hub/grafana_cpu_panel"  id="cpuMetric"/>
+        <a
+          href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}
+        >
+          <img data-lazysrc="/hub/grafana_cpu_panel" id="cpuMetric" />
         </a>
       </div>
       <div>
         <h3>Memory usage</h3>
-        <a href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}>
-          <img data-lazysrc="/hub/grafana_memory_panel"/>
+        <a
+          href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}
+        >
+          <img data-lazysrc="/hub/grafana_memory_panel" />
         </a>
       </div>
       <div className="manage-groups" style={{ float: "right", margin: "20px" }}>
@@ -173,10 +177,14 @@ const ServerDashboard = (props) => {
               <td>
                 <i id="mail-address-check-all" className="fa fa-square"></i>
                 {/*<button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>*/}
-                <Button id="send-notification" variant="light" style={{marginLeft: "10px"}} onClick={handleShow}>
-                    Notify
+                <Button
+                  id="send-notification"
+                  variant="light"
+                  style={{ marginLeft: "10px" }}
+                  onClick={handleShow}
+                >
+                  Notify
                 </Button>
-
               </td>
               <td>
                 {/* Start all servers */}
@@ -263,13 +271,27 @@ const ServerDashboard = (props) => {
               </td>
             </tr>
             {user_data.map((e, i) => (
-              <tr key={i + "row"} className="user-row" data-mail-address={e.mail_address ? e.mail_address : ""}>
+              <tr
+                key={i + "row"}
+                className="user-row"
+                data-mail-address={e.mail_address ? e.mail_address : ""}
+              >
                 <td data-testid="user-row-name">{e.name}</td>
                 <td data-testid="user-row-admin">{e.admin ? "admin" : ""}</td>
-                <td data-testid="user-row-mail">{
-                  (!e.server && e.mail_address) ? (<><input type="checkbox" className="mail-address-checkbox" style={{marginRight: "10px"}}/>{e.mail_address}</>)
-                    : <>-</>
-                  }
+                <td data-testid="user-row-mail">
+                  {!e.server && e.mail_address ? (
+                    <>
+                      <input
+                        type="checkbox"
+                        className="mail-address-checkbox"
+                        style={{ marginRight: "10px" }}
+                        value={e.name}
+                      />
+                      {e.mail_address}
+                    </>
+                  ) : (
+                    <>-</>
+                  )}
                 </td>
                 <td data-testid="user-row-last-activity">
                   {e.last_activity ? timeSince(e.last_activity) : "Never"}
@@ -361,34 +383,62 @@ const ServerDashboard = (props) => {
         />
         <br></br>
       </div>
-      <Modal animation={true} show={show} onHide={handleClose}>
+      <Modal
+        animation={true}
+        show={show}
+        onHide={handleClose}
+        id="send-notification-dialog"
+      >
         <Modal.Header closeButton>
           <Modal.Title>Send Notification</Modal.Title>
         </Modal.Header>
-        <Modal.Body id="send-notification-dialog">
-            <div class="notification-form">
-                <div class="notification-templates">
-                    Template: <select id="notification-template-items"></select>
-                    <button style={{marginLeft: "10px"}} class="btn btn-default btn-xs" id="notification-template-reset">Set</button>
-                    <button style={{marginLeft: "10px"}} class="btn btn-default btn-xs" id="notification-template-insert">Insert to body</button>
-                </div>
-                <div>
-                    <label for="notification-title">Subject</label>
-                    <input type="text" name="notification-title" id="notification-title"
-                           class="form-control notification-input notification-title-input"></input>
-                </div>
-                <div>
-                    <label for="notification-body">Body</label>
-                    <textarea name="notification-body" id="notification-body"
-                              class="form-control notification-input notification-body-input" rows="10"></textarea>
-                </div>
+        <Modal.Body>
+          <div class="notification-form">
+            <div class="notification-templates">
+              Template: <select id="notification-template-items"></select>
+              <button
+                style={{ marginLeft: "10px" }}
+                class="btn btn-default btn-xs"
+                id="notification-template-reset"
+              >
+                Set
+              </button>
+              <button
+                style={{ marginLeft: "10px" }}
+                class="btn btn-default btn-xs"
+                id="notification-template-insert"
+              >
+                Insert to body
+              </button>
             </div>
+            <div>
+              <label for="notification-title">Subject</label>
+              <input
+                type="text"
+                name="notification-title"
+                id="notification-title"
+                class="form-control notification-input notification-title-input"
+              ></input>
+            </div>
+            <div>
+              <label for="notification-body">Body</label>
+              <textarea
+                name="notification-body"
+                id="notification-body"
+                class="form-control notification-input notification-body-input"
+                rows="10"
+              ></textarea>
+            </div>
+          </div>
         </Modal.Body>
         <Modal.Footer>
           <Button variant="secondary" onClick={handleClose}>
             Cancel
           </Button>
-          <Button variant="primary" onClick={handleClose}>
+          <Button
+            variant="primary send-notification-button"
+            onClick={handleClose}
+          >
             Send
           </Button>
         </Modal.Footer>
