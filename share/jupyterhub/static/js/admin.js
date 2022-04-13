@@ -432,7 +432,7 @@ require(["jquery", "moment", "jhapi", "utils"], function (
   $(document).on("click", ".send-notification-button", function () {
     var to = [];
     $(".mail-address-checkbox:checked").each(function () {
-      to.push($(this).val());
+      to.push($(this).data("user"));
     });
     api.send_notification({
       to: to,

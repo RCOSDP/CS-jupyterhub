@@ -271,11 +271,7 @@ const ServerDashboard = (props) => {
               </td>
             </tr>
             {user_data.map((e, i) => (
-              <tr
-                key={i + "row"}
-                className="user-row"
-                data-mail-address={e.mail_address ? e.mail_address : ""}
-              >
+              <tr key={i + "row"} className="user-row">
                 <td data-testid="user-row-name">{e.name}</td>
                 <td data-testid="user-row-admin">{e.admin ? "admin" : ""}</td>
                 <td data-testid="user-row-mail">
@@ -285,7 +281,7 @@ const ServerDashboard = (props) => {
                         type="checkbox"
                         className="mail-address-checkbox"
                         style={{ marginRight: "10px" }}
-                        value={e.name}
+                        data-user={e.name}
                       />
                       {e.mail_address}
                     </>
