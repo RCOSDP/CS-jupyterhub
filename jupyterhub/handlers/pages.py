@@ -21,6 +21,7 @@ from ..utils import maybe_future
 from ..utils import url_path_join
 from .base import BaseHandler
 
+
 class RootHandler(BaseHandler):
     """Render the Hub root page.
 
@@ -152,7 +153,7 @@ class SpawnHandler(BaseHandler):
             self.redirect(url)
             return
 
-        spawner = user.spawners[server_name]
+        spawner = user.get_spawner(server_name, replace_failed=True)
 
         pending_url = self._get_pending_url(user, server_name)
 
@@ -238,7 +239,7 @@ class SpawnHandler(BaseHandler):
             if user is None:
                 raise web.HTTPError(404, "No such user: %s" % for_user)
 
-        spawner = user.spawners[server_name]
+        spawner = user.get_spawner(server_name, replace_failed=True)
 
         if spawner.ready:
             raise web.HTTPError(400, "%s is already running" % (spawner._log_name))
@@ -256,7 +257,7 @@ class SpawnHandler(BaseHandler):
             self.log.debug(
                 "Triggering spawn with supplied form options for %s", spawner._log_name
             )
-            options = await maybe_future(spawner.options_from_form(form_options))
+            options = await maybe_future(spawner.run_options_from_form(form_options))
             pending_url = self._get_pending_url(user, server_name)
             return await self._wrap_spawn_single_user(
                 user, server_name, spawner, pending_url, options
@@ -370,13 +371,9 @@ class SpawnPendingHandler(BaseHandler):
         auth_state = await user.get_auth_state()
 
         # First, check for previous failure.
-        if (
-            not spawner.active
-            and spawner._spawn_future
-            and spawner._spawn_future.done()
-            and spawner._spawn_future.exception()
-        ):
-            # Condition: spawner not active and _spawn_future exists and contains an Exception
+        if not spawner.active and spawner._failed:
+            # Condition: spawner not active and last spawn failed
+            # (failure is available as spawner._spawn_future.exception()).
             # Implicit spawn on /user/:name is not allowed if the user's last spawn failed.
             # We should point the user to Home if the most recent spawn failed.
             exc = spawner._spawn_future.exception()
@@ -454,6 +451,7 @@ class SpawnPendingHandler(BaseHandler):
         next_url = self.get_next_url(default=user.server_url(server_name))
         self.redirect(next_url)
 
+
 class GrafanaImageHandler(BaseHandler):
     @web.authenticated
     @needs_scope('admin:servers')
@@ -498,7 +496,7 @@ class AdminHandler(BaseHandler):
             server_version=f'{__version__} {self.version_hash}',
             api_page_limit=self.settings["api_page_default_limit"],
             base_url=self.settings["base_url"],
-            grafana_host=os.environ.get('GRAFANA_EXTERNAL_HOST')
+            grafana_host=os.environ.get('GRAFANA_EXTERNAL_HOST'),
         )
         self.finish(html)
 
