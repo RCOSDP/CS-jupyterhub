@@ -389,104 +389,6 @@ const ServerDashboard = (props) => {
                 </Button>
               </td>
             </tr>
-            {user_data.map((e, i) => (
-              <tr key={i + "row"} className="user-row">
-                <td data-testid="user-row-name">{e.name}</td>
-                <td data-testid="user-row-admin">{e.admin ? "admin" : ""}</td>
-                <td data-testid="user-row-mail">
-                  {!e.server && e.mail_address ? (
-                    <>
-                      <input
-                        type="checkbox"
-                        className="mail-address-checkbox"
-                        style={{ marginRight: "10px" }}
-                        data-user={e.name}
-                      />
-                      {e.mail_address}
-                    </>
-                  ) : (
-                    <>-</>
-                  )}
-                </td>
-                <td data-testid="user-row-last-activity">
-                  {e.last_activity ? timeSince(e.last_activity) : "Never"}
-                </td>
-                <td data-testid="user-row-server-activity">
-                  {e.server != null ? (
-                    // Stop Single-user server
-                    <button
-                      className="btn btn-danger btn-xs stop-button"
-                      onClick={() =>
-                        stopServer(e.name)
-                          .then((res) => {
-                            if (res.status < 300) {
-                              updateUsers(...slice)
-                                .then((data) => {
-                                  dispatchPageUpdate(data, page);
-                                })
-                                .catch(() =>
-                                  setErrorAlert(`Failed to update users list.`)
-                                );
-                            } else {
-                              setErrorAlert(`Failed to stop server.`);
-                            }
-                            return res;
-                          })
-                          .catch(() => setErrorAlert(`Failed to stop server.`))
-                      }
-                    >
-                      Stop Server
-                    </button>
-                  ) : (
-                    // Start Single-user server
-                    <button
-                      className="btn btn-primary btn-xs start-button"
-                      onClick={() =>
-                        startServer(e.name)
-                          .then((res) => {
-                            if (res.status < 300) {
-                              updateUsers(...slice)
-                                .then((data) => {
-                                  dispatchPageUpdate(data, page);
-                                })
-                                .catch(() =>
-                                  setErrorAlert(`Failed to update users list.`)
-                                );
-                            } else {
-                              setErrorAlert(`Failed to start server.`);
-                            }
-                            return res;
-                          })
-                          .catch(() => {
-                            setErrorAlert(`Failed to start server.`);
-                          })
-                      }
-                    >
-                      Start Server
-                    </button>
-                  )}
-                </td>
-                <td>
-                  {/* Edit User */}
-                  <button
-                    className="btn btn-primary btn-xs"
-                    style={{ marginRight: 20 }}
-                    onClick={() =>
-                      history.push({
-                        pathname: "/edit-user",
-                        state: {
-                          username: e.name,
-                          has_admin: e.admin,
-                          mail_address: e.mail_address,
-                        },
-                      })
-                    }
-                  >
-                    edit user
-                  </button>
-                </td>
-              </tr>
-            ))}
             {servers.map(([user, server], i) => {
               server.name = server.name || "";
               return (
@@ -495,7 +397,21 @@ const ServerDashboard = (props) => {
                   <td data-testid="user-row-admin">
                     {user.admin ? "admin" : ""}
                   </td>
-
+                  <td data-testid="user-row-mail">
+                    {!server.name && user.mail_address ? (
+                      <>
+                        <input
+                          type="checkbox"
+                          className="mail-address-checkbox"
+                          style={{ marginRight: "10px" }}
+                          data-user={user.name}
+                        />
+                        {user.mail_address}
+                      </>
+                    ) : (
+                      <>-</>
+                    )}
+                  </td>
                   <td data-testid="user-row-server">
                     {server.name ? (
                       <p class="text-secondary">{server.name}</p>
