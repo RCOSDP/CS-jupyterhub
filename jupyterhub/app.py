@@ -1725,7 +1725,9 @@ class JupyterHub(Application):
             for authority, files in self.internal_ssl_authorities.items():
                 if files:
                     self.log.info("Adding CA for %s", authority)
-                    certipy.store.add_record(authority, is_ca=True, files=files)
+                    certipy.store.add_record(
+                        authority, is_ca=True, files=files, overwrite=True
+                    )
 
             self.internal_trust_bundles = certipy.trust_from_graph(
                 self.internal_ssl_components_trust
@@ -3278,9 +3280,15 @@ class JupyterHub(Application):
         loop.make_current()
         loop.run_sync(self.cleanup)
 
-    async def shutdown_cancel_tasks(self, sig):
+    async def shutdown_cancel_tasks(self, sig=None):
         """Cancel all other tasks of the event loop and initiate cleanup"""
-        self.log.critical("Received signal %s, initiating shutdown...", sig.name)
+        if sig is None:
+            self.log.critical("Initiating shutdown...")
+        else:
+            self.log.critical("Received signal %s, initiating shutdown...", sig.name)
+
+        await self.cleanup()
+
         tasks = [t for t in asyncio_all_tasks() if t is not asyncio_current_task()]
 
         if tasks:
@@ -3297,7 +3305,6 @@ class JupyterHub(Application):
             tasks = [t for t in asyncio_all_tasks()]
             for t in tasks:
                 self.log.debug("Task status: %s", t)
-        await self.cleanup()
         asyncio.get_event_loop().stop()
 
     def stop(self):
@@ -3305,7 +3312,7 @@ class JupyterHub(Application):
             return
         if self.http_server:
             self.http_server.stop()
-        self.io_loop.add_callback(self.io_loop.stop)
+        self.io_loop.add_callback(self.shutdown_cancel_tasks)
 
     async def start_show_config(self):
         """Async wrapper around base start_show_config method"""

@@ -1,8 +1,19 @@
 import React, { useState } from "react";
+import regeneratorRuntime from "regenerator-runtime";
 import { useSelector, useDispatch } from "react-redux";
 import PropTypes from "prop-types";
 
-import { Button, Modal } from "react-bootstrap";
+import {
+  Button,
+  Col,
+  Row,
+  FormControl,
+  Card,
+  CardGroup,
+  Collapse,
+} from "react-bootstrap";
+import ReactObjectTableViewer from "react-object-table-viewer";
+
 import { Link } from "react-router-dom";
 import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
 
@@ -11,8 +22,8 @@ import { timeSince } from "../../util/timeSince";
 import PaginationFooter from "../PaginationFooter/PaginationFooter";
 import { useEffect } from "react";
 
-const AccessServerButton = ({ userName, serverName }) => (
-  <a href={`/user/${userName}/${serverName || ""}`}>
+const AccessServerButton = ({ url }) => (
+  <a href={url || ""}>
     <button className="btn btn-primary btn-xs" style={{ marginRight: 20 }}>
       Access Server
     </button>
@@ -20,6 +31,7 @@ const AccessServerButton = ({ userName, serverName }) => (
 );
 
 const ServerDashboard = (props) => {
+  let base_url = window.base_url;
   // sort methods
   var usernameDesc = (e) => e.sort((a, b) => (a.name > b.name ? 1 : -1)),
     usernameAsc = (e) => e.sort((a, b) => (a.name < b.name ? 1 : -1)),
@@ -41,14 +53,16 @@ const ServerDashboard = (props) => {
   var [errorAlert, setErrorAlert] = useState(null);
   var [sortMethod, setSortMethod] = useState(null);
   var [disabledButtons, setDisabledButtons] = useState({});
+  const [collapseStates, setCollapseStates] = useState({});
 
   var user_data = useSelector((state) => state.user_data),
     user_page = useSelector((state) => state.user_page),
     limit = useSelector((state) => state.limit),
+    name_filter = useSelector((state) => state.name_filter),
     page = parseInt(new URLSearchParams(props.location.search).get("page"));
 
   page = isNaN(page) ? 0 : page;
-  var slice = [page * limit, limit];
+  var slice = [page * limit, limit, name_filter];
 
   const dispatch = useDispatch();
 
@@ -81,12 +95,13 @@ const ServerDashboard = (props) => {
     history,
   } = props;
 
-  var dispatchPageUpdate = (data, page) => {
+  var dispatchPageUpdate = (data, page, name_filter) => {
     dispatch({
       type: "USER_PAGE",
       value: {
         data: data,
         page: page,
+        name_filter: name_filter,
       },
     });
   };
@@ -96,8 +111,18 @@ const ServerDashboard = (props) => {
   }
 
   if (page != user_page) {
-    updateUsers(...slice).then((data) => dispatchPageUpdate(data, page));
+    updateUsers(...slice).then((data) =>
+      dispatchPageUpdate(data, page, name_filter)
+    );
   }
+
+  var debounce = require("lodash.debounce");
+  const handleSearch = debounce(async (event) => {
+    // setNameFilter(event.target.value);
+    updateUsers(page * limit, limit, event.target.value).then((data) =>
+      dispatchPageUpdate(data, page, name_filter)
+    );
+  }, 300);
 
   if (sortMethod != null) {
     user_data = sortMethod(user_data);
@@ -116,7 +141,7 @@ const ServerDashboard = (props) => {
               if (res.status < 300) {
                 updateUsers(...slice)
                   .then((data) => {
-                    dispatchPageUpdate(data, page);
+                    dispatchPageUpdate(data, page, name_filter);
                   })
                   .catch(() => {
                     setIsDisabled(false);
@@ -152,7 +177,7 @@ const ServerDashboard = (props) => {
               if (res.status < 300) {
                 updateUsers(...slice)
                   .then((data) => {
-                    dispatchPageUpdate(data, page);
+                    dispatchPageUpdate(data, page, name_filter);
                   })
                   .catch(() => {
                     setErrorAlert(`Failed to update users list.`);
@@ -195,6 +220,124 @@ const ServerDashboard = (props) => {
         </button>
       </td>
     );
+  };
+
+  const ServerRowTable = ({ data }) => {
+    return (
+      <ReactObjectTableViewer
+        className="table-striped table-bordered"
+        style={{
+          padding: "3px 6px",
+          margin: "auto",
+        }}
+        keyStyle={{
+          padding: "4px",
+        }}
+        valueStyle={{
+          padding: "4px",
+        }}
+        data={data}
+      />
+    );
+  };
+
+  const serverRow = (user, server) => {
+    const { servers, ...userNoServers } = user;
+    const serverNameDash = server.name ? `-${server.name}` : "";
+    const userServerName = user.name + serverNameDash;
+    const open = collapseStates[userServerName] || false;
+    return [
+      <tr key={`${userServerName}-row`} className="user-row">
+        <td data-testid="user-row-name">
+          <span>
+            <Button
+              onClick={() =>
+                setCollapseStates({
+                  ...collapseStates,
+                  [userServerName]: !open,
+                })
+              }
+              aria-controls={`${userServerName}-collapse`}
+              aria-expanded={open}
+              data-testid={`${userServerName}-collapse-button`}
+              variant={open ? "secondary" : "primary"}
+              size="sm"
+            >
+              <span className="caret"></span>
+            </Button>{" "}
+          </span>
+          <span data-testid={`user-name-div-${userServerName}`}>
+            {user.name}
+          </span>
+        </td>
+        <td data-testid="user-row-admin">{user.admin ? "admin" : ""}</td>
+
+        <td data-testid="user-row-server">
+          {server.name ? (
+            <p className="text-secondary">{server.name}</p>
+          ) : (
+            <p style={{ color: "lightgrey" }}>[MAIN]</p>
+          )}
+        </td>
+        <td data-testid="user-row-last-activity">
+          {server.last_activity ? timeSince(server.last_activity) : "Never"}
+        </td>
+        <td data-testid="user-row-server-activity">
+          {server.started ? (
+            // Stop Single-user server
+            <>
+              <StopServerButton serverName={server.name} userName={user.name} />
+              <AccessServerButton url={server.url} />
+            </>
+          ) : (
+            // Start Single-user server
+            <>
+              <StartServerButton
+                serverName={server.name}
+                userName={user.name}
+                style={{ marginRight: 20 }}
+              />
+              <a
+                href={`${base_url}spawn/${user.name}${
+                  server.name && "/" + server.name
+                }`}
+              >
+                <button
+                  className="btn btn-secondary btn-xs"
+                  style={{ marginRight: 20 }}
+                >
+                  Spawn Page
+                </button>
+              </a>
+            </>
+          )}
+        </td>
+        <EditUserCell user={user} />
+      </tr>,
+      <tr>
+        <td
+          colSpan={6}
+          style={{ padding: 0 }}
+          data-testid={`${userServerName}-td`}
+        >
+          <Collapse in={open} data-testid={`${userServerName}-collapse`}>
+            <CardGroup
+              id={`${userServerName}-card-group`}
+              style={{ width: "100%", margin: "0 auto", float: "none" }}
+            >
+              <Card style={{ width: "100%", padding: 3, margin: "0 auto" }}>
+                <Card.Title>User</Card.Title>
+                <ServerRowTable data={userNoServers} />
+              </Card>
+              <Card style={{ width: "100%", padding: 3, margin: "0 auto" }}>
+                <Card.Title>Server</Card.Title>
+                <ServerRowTable data={server} />
+              </Card>
+            </CardGroup>
+          </Collapse>
+        </td>
+      </tr>,
+    ];
   };
 
   let servers = user_data.flatMap((user) => {
@@ -246,7 +389,23 @@ const ServerDashboard = (props) => {
         <Link to="/groups">{"> Manage Groups"}</Link>
       </div>
       <div className="server-dashboard-container">
-        <table className="table table-striped table-bordered table-hover">
+        <Row>
+          <Col md={4}>
+            <FormControl
+              type="text"
+              name="user_search"
+              placeholder="Search users"
+              aria-label="user-search"
+              defaultValue={name_filter}
+              onChange={handleSearch}
+            />
+          </Col>
+
+          <Col md="auto" style={{ float: "right", margin: 15 }}>
+            <Link to="/groups">{"> Manage Groups"}</Link>
+          </Col>
+        </Row>
+        <table className="table table-bordered table-hover">
           <thead className="admin-table-head">
             <tr>
               <th id="user-header">
@@ -344,7 +503,7 @@ const ServerDashboard = (props) => {
                       .then((res) => {
                         updateUsers(...slice)
                           .then((data) => {
-                            dispatchPageUpdate(data, page);
+                            dispatchPageUpdate(data, page, name_filter);
                           })
                           .catch(() =>
                             setErrorAlert(`Failed to update users list.`)
@@ -380,7 +539,7 @@ const ServerDashboard = (props) => {
                       .then((res) => {
                         updateUsers(...slice)
                           .then((data) => {
-                            dispatchPageUpdate(data, page);
+                            dispatchPageUpdate(data, page, name_filter);
                           })
                           .catch(() =>
                             setErrorAlert(`Failed to update users list.`)

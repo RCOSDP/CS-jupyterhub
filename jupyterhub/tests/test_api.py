@@ -473,6 +473,42 @@ async def test_get_users_state_filter(app, state):
 
 
 @mark.user
+async def test_get_users_name_filter(app):
+    db = app.db
+
+    add_user(db, app=app, name='q')
+    add_user(db, app=app, name='qr')
+    add_user(db, app=app, name='qrs')
+    add_user(db, app=app, name='qrst')
+    added_usernames = {'q', 'qr', 'qrs', 'qrst'}
+
+    r = await api_request(app, 'users')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert added_usernames.intersection(response_users) == added_usernames
+
+    r = await api_request(app, 'users?name_filter=q')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['q', 'qr', 'qrs', 'qrst']
+
+    r = await api_request(app, 'users?name_filter=qr')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['qr', 'qrs', 'qrst']
+
+    r = await api_request(app, 'users?name_filter=qrs')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['qrs', 'qrst']
+
+    r = await api_request(app, 'users?name_filter=qrst')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['qrst']
+
+
+@mark.user
 async def test_get_self(app):
     db = app.db
 
@@ -2104,14 +2140,23 @@ def test_shutdown(app):
         )
         return r
 
-    real_stop = loop.stop
+    real_stop = loop.asyncio_loop.stop
 
     def stop():
         stop.called = True
         loop.call_later(1, real_stop)
 
-    with mock.patch.object(loop, 'stop', stop):
+    real_cleanup = app.cleanup
+
+    def cleanup():
+        cleanup.called = True
+        return real_cleanup()
+
+    app.cleanup = cleanup
+
+    with mock.patch.object(loop.asyncio_loop, 'stop', stop):
         r = loop.run_sync(shutdown, timeout=5)
     r.raise_for_status()
     reply = r.json()
+    assert cleanup.called
     assert stop.called
