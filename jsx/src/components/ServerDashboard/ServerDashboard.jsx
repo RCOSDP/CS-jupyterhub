@@ -9,6 +9,7 @@ import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
 import "./server-dashboard.css";
 import { timeSince } from "../../util/timeSince";
 import PaginationFooter from "../PaginationFooter/PaginationFooter";
+import { useEffect } from "react";
 
 const AccessServerButton = ({ userName, serverName }) => (
   <a href={`/user/${userName}/${serverName || ""}`}>
@@ -55,6 +56,20 @@ const ServerDashboard = (props) => {
 
   const handleClose = () => setShow(false);
   const handleShow = () => setShow(true);
+
+  // grafana reload image
+  const grafana_src =
+    "http://" +
+    window.grafana_host +
+    "/d/icjpCppik/k8-cluster-detail-dashboard";
+  const grafana_img_alt = "";
+
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      grafana_img_alt = "user not logged in";
+    }, 3000);
+    return () => clearTimeout(timer);
+  }, []);
 
   var {
     updateUsers,
@@ -213,18 +228,18 @@ const ServerDashboard = (props) => {
 
       <div style={{ float: "left" }}>
         <h3>CPU usage</h3>
-        <a
-          href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}
-        >
-          <img data-lazysrc="/hub/grafana_cpu_panel" id="cpuMetric" />
+        <a href={grafana_src}>
+          <img
+            src="/hub/grafana_cpu_panel"
+            id="cpuMetric"
+            alt={grafana_img_alt}
+          />
         </a>
       </div>
       <div>
         <h3>Memory usage</h3>
-        <a
-          href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}
-        >
-          <img data-lazysrc="/hub/grafana_memory_panel" />
+        <a href={grafana_src}>
+          <img src="/hub/grafana_memory_panel" alt={grafana_img_alt} />
         </a>
       </div>
       <div className="manage-groups" style={{ float: "right", margin: "20px" }}>
@@ -587,6 +602,14 @@ const SortHandler = (props) => {
     </div>
   );
 };
+
+function ReLoadImages() {
+  $("img[data-lazysrc]").each(function () {
+    //* set the img src from data-src
+    $(this).attr("src", $(this).attr("data-lazysrc"));
+    $(this).attr("alt", "user not logged in");
+  });
+}
 
 SortHandler.propTypes = {
   sorts: PropTypes.object,
