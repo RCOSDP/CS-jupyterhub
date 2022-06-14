@@ -386,9 +386,6 @@ const ServerDashboard = (props) => {
           <img src="/hub/grafana_memory_panel" alt={grafana_img_alt} />
         </a>
       </div>
-      <div className="manage-groups" style={{ float: "right", margin: "20px" }}>
-        <Link to="/groups">{"> Manage Groups"}</Link>
-      </div>
       <div className="server-dashboard-container">
         <Row>
           <Col md={4}>
