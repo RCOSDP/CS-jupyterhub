@@ -461,9 +461,7 @@ const ServerDashboard = (props) => {
                 style={{ marginRight: 20 }}
               />
               <a
-                href={`${base_url}spawn/${user.name}${
-                  server.name && "/" + server.name
-                }`}
+                  href={base_url + "spawn/" + user.name + (server.name ? "/" + server.name : "")}
               >
                 <button
                   className="btn btn-secondary btn-xs"
