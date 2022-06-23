@@ -55,6 +55,9 @@ const ServerDashboard = (props) => {
   var [sortMethod, setSortMethod] = useState(null);
   var [disabledButtons, setDisabledButtons] = useState({});
   const [collapseStates, setCollapseStates] = useState({});
+  const [show, setShow] = useState(false);
+  const handleClose = () => setShow(false);
+  const handleShow = () => setShow(true)
 
   var user_data = useSelector((state) => state.user_data),
     user_page = useSelector((state) => state.user_page),
@@ -66,11 +69,32 @@ const ServerDashboard = (props) => {
   var slice = [page * limit, limit, name_filter];
 
   const dispatch = useDispatch();
+  const [isCheck, setIsCheck] = useState([]);
+  var all_mail_address = [];
 
-  const [show, setShow] = useState(false);
+  const equals = (a, b) =>
+    a.length === b.length &&
+    a.every((v, i) => v === b[i]);
 
-  const handleClose = () => setShow(false);
-  const handleShow = () => setShow(true);
+  const CheckedMail = (e) => {
+    const { value, checked } = e.target;
+    var tmpUsers = [];
+    if (checked) {
+      tmpUsers = [...isCheck, value];
+    } else {
+      tmpUsers = isCheck.filter(item => item !== value);
+    }  
+    setIsCheck(tmpUsers);
+  }
+
+  const CheckAll = (e) => {
+    const {checked} = e.target;
+    if (checked){
+      setIsCheck(all_mail_address);
+    } else {
+      setIsCheck([]);
+    }
+  }
 
   // grafana reload image
   const grafana_src =
@@ -94,6 +118,8 @@ const ServerDashboard = (props) => {
     startAll,
     stopAll,
     history,
+    getNotificationTemplates,
+    sendNotification,
   } = props;
 
   var dispatchPageUpdate = (data, page, name_filter) => {
@@ -107,10 +133,124 @@ const ServerDashboard = (props) => {
     });
   };
 
-  if (!user_data) {
-    return <div data-testid="no-show"></div>;
-  }
+  const NotificationModal = (props) => {
+    const [notificationState, setNotificationState] = useState({});
+    const [templates, setTemplate] = useState(null);
+    const [body, setBody] = useState("");
+    const [title, setTitle] = useState("");
+    
+    useEffect (() => {
+      getNotificationTemplates().then((data) => {
+        setTemplate(data.templates);
+        var tmpDefault = data.templates.find((t)=> {return t.default === true});
+        if (tmpDefault) {
+          setTitle(tmpDefault.subject);
+          setBody(tmpDefault.body);
+        }
+      }).catch(setTemplate([])); 
+    },[])
 
+    const choiceTemplate = (e) => {
+      if (e.target.value != "") {
+        setNotificationState(templates.find((t) => {return t.name === e.target.value}));
+      }
+    }
+
+    const setValue = () => {
+      setTitle(notificationState.subject);
+      setBody(notificationState.body);
+    }
+
+    const insertBody = () => {
+      let tmpString = body;
+      tmpString += '\n'
+      tmpString += notificationState.body;
+      setBody(tmpString);
+    };
+    
+    const callSendNotification = () => {
+      sendNotification(isCheck, title, body);
+      props.handleClose();
+    }
+  
+    let templateButton;
+    if (templates?.length > 0) {
+      templateButton = (
+        <div class="notification-templates">
+          Template: <select onChange={choiceTemplate}>
+            <option value="">テンプレートを選択してください。</option>
+            {templates.map((template) => <option value={template.name}>{template.name}</option>)}</select>
+          <button
+            style={{ marginLeft: "10px" }}
+            class="btn btn-default btn-xs"
+            onClick={setValue}
+          >
+            Set
+          </button>
+          <button
+            style={{ marginLeft: "10px" }}
+            class="btn btn-default btn-xs"
+            // id="notification-template-insert"
+            onClick={insertBody}
+          >
+            Insert to body
+          </button>
+        </div>);
+    } else {
+      templateButton = ""
+    }
+    return (
+      <Modal
+        animation={true}
+        show={show}
+        onHide={props.handleClose}
+        // id="send-notification-dialog"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>Send Notification</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div class="notification-form">
+            {templateButton}
+            <div>
+              <label for="notification-title">Subject</label>
+              <input
+                type="text"
+                // name="notification-title"
+                // id="notification-title"
+                class="form-control notification-input notification-title-input"
+                value={title}
+                onChange={(e)=>setTitle(e.target.value)}
+              ></input>
+            </div>
+            <div>
+              <label for="notification-body">Body</label>
+              <textarea
+                name="notification-body"
+                class="form-control notification-input notification-body-input"
+                rows="10"
+                value={body}
+                onChange={(e)=>setBody(e.target.value)}
+              ></textarea>
+            </div>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={props.handleClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary send-notification-button"
+            onClick={callSendNotification}
+            disabled={body=="" || title==""}
+          >
+            Send
+          </Button>
+        </Modal.Footer>
+      </Modal>
+    )
+  }
+  
   if (page != user_page) {
     updateUsers(...slice).then((data) =>
       dispatchPageUpdate(data, page, name_filter)
@@ -129,6 +269,12 @@ const ServerDashboard = (props) => {
     user_data = sortMethod(user_data);
   }
 
+  if (!user_data) {
+    return <div data-testid="no-show"></div>;
+  } else {
+    all_mail_address = user_data.flatMap(u => u.name);
+  } 
+  
   const StopServerButton = ({ serverName, userName }) => {
     var [isDisabled, setIsDisabled] = useState(false);
     return (
@@ -272,7 +418,23 @@ const ServerDashboard = (props) => {
           </span>
         </td>
         <td data-testid="user-row-admin">{user.admin ? "admin" : ""}</td>
-
+        <td data-testid="user-row-mail">
+                    {!server.name && user.mail_address ? (
+                      <>
+                        <input
+                          type="checkbox"
+                          className="mail-address-checkbox"
+                          style={{ marginRight: "10px" }}
+                          value = {user.name}
+                          onChange={CheckedMail}
+                          checked={isCheck.includes(user.name)}
+                        />
+                        {user.mail_address}
+                      </>
+                    ) : (
+                      <>-</>
+                    )}
+        </td>
         <td data-testid="user-row-server">
           {server.name ? (
             <p className="text-secondary">{server.name}</p>
@@ -466,13 +628,18 @@ const ServerDashboard = (props) => {
               </td>
               <td></td>
               <td>
-                <i id="mail-address-check-all" className="fa fa-square"></i>
+                {/* <i id="mail-address-check-all" className="fa fa-check-square"></i> */}
+                <input type="checkbox"
+                  onChange={CheckAll}
+                  checked={equals(isCheck, all_mail_address)}
+                />
                 {/*<button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>*/}
                 <Button
                   id="send-notification"
                   variant="light"
                   style={{ marginLeft: "10px" }}
                   onClick={handleShow}
+                  disabled={isCheck.length<=0}
                 >
                   Notify
                 </Button>
@@ -561,80 +728,7 @@ const ServerDashboard = (props) => {
                 </Button>
               </td>
             </tr>
-            {servers.map(([user, server], i) => {
-              server.name = server.name || "";
-              return (
-                <tr key={i + "row"} className="user-row">
-                  <td data-testid="user-row-name">{user.name}</td>
-                  <td data-testid="user-row-admin">
-                    {user.admin ? "admin" : ""}
-                  </td>
-                  <td data-testid="user-row-mail">
-                    {!server.name && user.mail_address ? (
-                      <>
-                        <input
-                          type="checkbox"
-                          className="mail-address-checkbox"
-                          style={{ marginRight: "10px" }}
-                          data-user={user.name}
-                        />
-                        {user.mail_address}
-                      </>
-                    ) : (
-                      <>-</>
-                    )}
-                  </td>
-                  <td data-testid="user-row-server">
-                    {server.name ? (
-                      <p class="text-secondary">{server.name}</p>
-                    ) : (
-                      <p style={{ color: "lightgrey" }}>[MAIN]</p>
-                    )}
-                  </td>
-                  <td data-testid="user-row-last-activity">
-                    {server.last_activity
-                      ? timeSince(server.last_activity)
-                      : "Never"}
-                  </td>
-                  <td data-testid="user-row-server-activity">
-                    {server.started ? (
-                      // Stop Single-user server
-                      <>
-                        <StopServerButton
-                          serverName={server.name}
-                          userName={user.name}
-                        />
-                        <AccessServerButton
-                          serverName={server.name}
-                          userName={user.name}
-                        />
-                      </>
-                    ) : (
-                      // Start Single-user server
-                      <>
-                        <StartServerButton
-                          serverName={server.name}
-                          userName={user.name}
-                        />
-                        <a
-                          href={`/spawn/${user.name}${
-                            server.name && "/" + server.name
-                          }`}
-                        >
-                          <button
-                            className="btn btn-secondary btn-xs"
-                            style={{ marginRight: 20 }}
-                          >
-                            Spawn Page
-                          </button>
-                        </a>
-                      </>
-                    )}
-                  </td>
-                  <EditUserCell user={user} />
-                </tr>
-              );
-            })}
+            {servers.flatMap(([user, server]) => serverRow(user, server))}
           </tbody>
         </table>
         <PaginationFooter
@@ -646,66 +740,7 @@ const ServerDashboard = (props) => {
         />
         <br></br>
       </div>
-      <Modal
-        animation={true}
-        show={show}
-        onHide={handleClose}
-        id="send-notification-dialog"
-      >
-        <Modal.Header closeButton>
-          <Modal.Title>Send Notification</Modal.Title>
-        </Modal.Header>
-        <Modal.Body>
-          <div class="notification-form">
-            <div class="notification-templates">
-              Template: <select id="notification-template-items"></select>
-              <button
-                style={{ marginLeft: "10px" }}
-                class="btn btn-default btn-xs"
-                id="notification-template-reset"
-              >
-                Set
-              </button>
-              <button
-                style={{ marginLeft: "10px" }}
-                class="btn btn-default btn-xs"
-                id="notification-template-insert"
-              >
-                Insert to body
-              </button>
-            </div>
-            <div>
-              <label for="notification-title">Subject</label>
-              <input
-                type="text"
-                name="notification-title"
-                id="notification-title"
-                class="form-control notification-input notification-title-input"
-              ></input>
-            </div>
-            <div>
-              <label for="notification-body">Body</label>
-              <textarea
-                name="notification-body"
-                id="notification-body"
-                class="form-control notification-input notification-body-input"
-                rows="10"
-              ></textarea>
-            </div>
-          </div>
-        </Modal.Body>
-        <Modal.Footer>
-          <Button variant="secondary" onClick={handleClose}>
-            Cancel
-          </Button>
-          <Button
-            variant="primary send-notification-button"
-            onClick={handleClose}
-          >
-            Send
-          </Button>
-        </Modal.Footer>
-      </Modal>
+      <NotificationModal handleClose={handleClose}/>
     </div>
   );
 };

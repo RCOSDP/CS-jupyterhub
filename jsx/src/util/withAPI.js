@@ -47,6 +47,10 @@ const withAPI = withProps(() => ({
   noChangeEvent: () => {
     return null;
   },
+  getNotificationTemplates: () =>
+    jhapiRequest("/notifications/templates", "GET").then((data) => data.json()),
+  sendNotification: (to, title, body) =>
+    jhapiRequest("/notifications", "PUT", { to: to, title: title, body: body }),
   //
   refreshGroupsData: () =>
     jhapiRequest("/groups", "GET").then((data) => data.json()),
