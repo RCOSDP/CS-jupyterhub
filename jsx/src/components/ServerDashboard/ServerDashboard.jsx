@@ -1,16 +1,38 @@
 import React, { useState } from "react";
+import regeneratorRuntime from "regenerator-runtime";
 import { useSelector, useDispatch } from "react-redux";
 import PropTypes from "prop-types";
 
-import { Button } from "react-bootstrap";
+import {
+  Modal,
+  Button,
+  Col,
+  Row,
+  FormControl,
+  Card,
+  CardGroup,
+  Collapse,
+} from "react-bootstrap";
+import ReactObjectTableViewer from "react-object-table-viewer";
+
 import { Link } from "react-router-dom";
 import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
 
 import "./server-dashboard.css";
 import { timeSince } from "../../util/timeSince";
 import PaginationFooter from "../PaginationFooter/PaginationFooter";
+import { useEffect } from "react";
+
+const AccessServerButton = ({ url }) => (
+  <a href={url || ""}>
+    <button className="btn btn-primary btn-xs" style={{ marginRight: 20 }}>
+      Access Server
+    </button>
+  </a>
+);
 
 const ServerDashboard = (props) => {
+  let base_url = window.base_url;
   // sort methods
   var usernameDesc = (e) => e.sort((a, b) => (a.name > b.name ? 1 : -1)),
     usernameAsc = (e) => e.sort((a, b) => (a.name < b.name ? 1 : -1)),
@@ -31,16 +53,54 @@ const ServerDashboard = (props) => {
 
   var [errorAlert, setErrorAlert] = useState(null);
   var [sortMethod, setSortMethod] = useState(null);
+  var [disabledButtons, setDisabledButtons] = useState({});
+  const [collapseStates, setCollapseStates] = useState({});
+  const [show, setShow] = useState(false);
+  const handleClose = () => setShow(false);
+  const handleShow = () => setShow(true);
 
   var user_data = useSelector((state) => state.user_data),
     user_page = useSelector((state) => state.user_page),
     limit = useSelector((state) => state.limit),
+    name_filter = useSelector((state) => state.name_filter),
     page = parseInt(new URLSearchParams(props.location.search).get("page"));
 
   page = isNaN(page) ? 0 : page;
-  var slice = [page * limit, limit];
+  var slice = [page * limit, limit, name_filter];
 
   const dispatch = useDispatch();
+  const [checkedUsers, setCheckedUsers] = useState([]);
+  var users_with_mail = [];
+
+  const equals = (a, b) =>
+    a.length === b.length && a.every((v, i) => v === b[i]);
+
+  const CheckedMail = (e) => {
+    const { value, checked } = e.target;
+    var tmpUsers = [];
+    if (checked) {
+      tmpUsers = [...checkedUsers, value];
+    } else {
+      tmpUsers = checkedUsers.filter((item) => item !== value);
+    }
+    setCheckedUsers(tmpUsers);
+  };
+
+  const CheckAll = (e) => {
+    const { checked } = e.target;
+    if (checked) {
+      setCheckedUsers(users_with_mail);
+    } else {
+      setCheckedUsers([]);
+    }
+  };
+
+  // grafana reload image
+  const grafana_src =
+    "http://" +
+    window.grafana_host +
+    "/d/icjpCppik/k8-cluster-detail-dashboard";
+  const grafana_img_alt = "user not logged in";
 
   var {
     updateUsers,
@@ -50,29 +110,418 @@ const ServerDashboard = (props) => {
     startAll,
     stopAll,
     history,
+    getNotificationTemplates,
+    sendNotification,
   } = props;
 
-  var dispatchPageUpdate = (data, page) => {
+  var dispatchPageUpdate = (data, page, name_filter) => {
     dispatch({
       type: "USER_PAGE",
       value: {
         data: data,
         page: page,
+        name_filter: name_filter,
       },
     });
   };
 
-  if (!user_data) {
-    return <div data-testid="no-show"></div>;
-  }
+  const NotificationModal = (props) => {
+    const [notificationState, setNotificationState] = useState({});
+    const [templates, setTemplates] = useState(null);
+    const [body, setBody] = useState("");
+    const [title, setTitle] = useState("");
+
+    useEffect(() => {
+      getNotificationTemplates()
+        .then((data) => {
+          if (data.templates) {
+            setTemplates(data.templates);
+            var tmpDefault = data.templates.find((t) => {
+              return t.default === true;
+            });
+            if (tmpDefault) {
+              setTitle(tmpDefault.subject);
+              setBody(tmpDefault.body);
+            }
+          }
+        })
+        .catch(setTemplates([]));
+    }, []);
+
+    const selectTemplate = (e) => {
+      if (e.target.value != "") {
+        setNotificationState(
+          templates.find((t) => {
+            return t.name === e.target.value;
+          })
+        );
+      }
+    };
+
+    const setValue = () => {
+      setTitle(notificationState.subject);
+      setBody(notificationState.body);
+    };
+
+    const insertBody = () => {
+      let tmpString = body;
+      tmpString += "\n";
+      tmpString += notificationState.body;
+      setBody(tmpString);
+    };
+
+    const callSendNotification = () => {
+      sendNotification(checkedUsers, title, body);
+      props.handleClose();
+    };
+
+    let templateButton;
+    if (templates?.length > 0) {
+      templateButton = (
+        <div class="notification-templates">
+          Template:{" "}
+          <select onChange={selectTemplate}>
+            <option value="">テンプレートを選択してください。</option>
+            {templates.map((template) => (
+              <option value={template.name}>{template.name}</option>
+            ))}
+          </select>
+          <button
+            style={{ marginLeft: "10px" }}
+            class="btn btn-default btn-xs"
+            onClick={setValue}
+          >
+            Set
+          </button>
+          <button
+            style={{ marginLeft: "10px" }}
+            class="btn btn-default btn-xs"
+            // id="notification-template-insert"
+            onClick={insertBody}
+          >
+            Insert to body
+          </button>
+        </div>
+      );
+    } else {
+      templateButton = "";
+    }
+    return (
+      <Modal
+        animation={true}
+        show={show}
+        onHide={props.handleClose}
+        // id="send-notification-dialog"
+      >
+        <Modal.Header closeButton>
+          <Modal.Title>Send Notification</Modal.Title>
+        </Modal.Header>
+        <Modal.Body>
+          <div class="notification-form">
+            {templateButton}
+            <div>
+              <label for="notification-title">Subject</label>
+              <input
+                type="text"
+                // name="notification-title"
+                // id="notification-title"
+                class="form-control notification-input notification-title-input"
+                value={title}
+                onChange={(e) => setTitle(e.target.value)}
+              ></input>
+            </div>
+            <div>
+              <label for="notification-body">Body</label>
+              <textarea
+                name="notification-body"
+                class="form-control notification-input notification-body-input"
+                rows="10"
+                value={body}
+                onChange={(e) => setBody(e.target.value)}
+              ></textarea>
+            </div>
+          </div>
+        </Modal.Body>
+        <Modal.Footer>
+          <Button variant="secondary" onClick={props.handleClose}>
+            Cancel
+          </Button>
+          <Button
+            variant="primary send-notification-button"
+            onClick={callSendNotification}
+            disabled={body == "" || title == ""}
+          >
+            Send
+          </Button>
+        </Modal.Footer>
+      </Modal>
+    );
+  };
 
   if (page != user_page) {
-    updateUsers(...slice).then((data) => dispatchPageUpdate(data, page));
+    updateUsers(...slice).then((data) =>
+      dispatchPageUpdate(data, page, name_filter)
+    );
   }
+
+  var debounce = require("lodash.debounce");
+  const handleSearch = debounce(async (event) => {
+    // setNameFilter(event.target.value);
+    updateUsers(page * limit, limit, event.target.value).then((data) =>
+      dispatchPageUpdate(data, page, name_filter)
+    );
+  }, 300);
 
   if (sortMethod != null) {
     user_data = sortMethod(user_data);
   }
+
+  if (!user_data) {
+    return <div data-testid="no-show"></div>;
+  } else {
+    users_with_mail = user_data
+      .filter((u) => u.mail_address)
+      .flatMap((u) => u.name);
+  }
+
+  const StopServerButton = ({ serverName, userName }) => {
+    var [isDisabled, setIsDisabled] = useState(false);
+    return (
+      <button
+        className="btn btn-danger btn-xs stop-button"
+        disabled={isDisabled}
+        onClick={() => {
+          setIsDisabled(true);
+          stopServer(userName, serverName)
+            .then((res) => {
+              if (res.status < 300) {
+                updateUsers(...slice)
+                  .then((data) => {
+                    dispatchPageUpdate(data, page, name_filter);
+                  })
+                  .catch(() => {
+                    setIsDisabled(false);
+                    setErrorAlert(`Failed to update users list.`);
+                  });
+              } else {
+                setErrorAlert(`Failed to stop server.`);
+                setIsDisabled(false);
+              }
+              return res;
+            })
+            .catch(() => {
+              setErrorAlert(`Failed to stop server.`);
+              setIsDisabled(false);
+            });
+        }}
+      >
+        Stop Server
+      </button>
+    );
+  };
+
+  const StartServerButton = ({ serverName, userName }) => {
+    var [isDisabled, setIsDisabled] = useState(false);
+    return (
+      <button
+        className="btn btn-success btn-xs start-button"
+        disabled={isDisabled}
+        onClick={() => {
+          setIsDisabled(true);
+          startServer(userName, serverName)
+            .then((res) => {
+              if (res.status < 300) {
+                updateUsers(...slice)
+                  .then((data) => {
+                    dispatchPageUpdate(data, page, name_filter);
+                  })
+                  .catch(() => {
+                    setErrorAlert(`Failed to update users list.`);
+                    setIsDisabled(false);
+                  });
+              } else {
+                setErrorAlert(`Failed to start server.`);
+                setIsDisabled(false);
+              }
+              return res;
+            })
+            .catch(() => {
+              setErrorAlert(`Failed to start server.`);
+              setIsDisabled(false);
+            });
+        }}
+      >
+        Start Server
+      </button>
+    );
+  };
+
+  const EditUserCell = ({ user }) => {
+    return (
+      <td>
+        <button
+          className="btn btn-primary btn-xs"
+          style={{ marginRight: 20 }}
+          onClick={() =>
+            history.push({
+              pathname: "/edit-user",
+              state: {
+                username: user.name,
+                has_admin: user.admin,
+              },
+            })
+          }
+        >
+          Edit User
+        </button>
+      </td>
+    );
+  };
+
+  const ServerRowTable = ({ data }) => {
+    return (
+      <ReactObjectTableViewer
+        className="table-striped table-bordered"
+        style={{
+          padding: "3px 6px",
+          margin: "auto",
+        }}
+        keyStyle={{
+          padding: "4px",
+        }}
+        valueStyle={{
+          padding: "4px",
+        }}
+        data={data}
+      />
+    );
+  };
+
+  const serverRow = (user, server) => {
+    const { servers, ...userNoServers } = user;
+    const serverNameDash = server.name ? `-${server.name}` : "";
+    const userServerName = user.name + serverNameDash;
+    const open = collapseStates[userServerName] || false;
+    return [
+      <tr key={`${userServerName}-row`} className="user-row">
+        <td data-testid="user-row-name">
+          <span>
+            <Button
+              onClick={() =>
+                setCollapseStates({
+                  ...collapseStates,
+                  [userServerName]: !open,
+                })
+              }
+              aria-controls={`${userServerName}-collapse`}
+              aria-expanded={open}
+              data-testid={`${userServerName}-collapse-button`}
+              variant={open ? "secondary" : "primary"}
+              size="sm"
+            >
+              <span className="caret"></span>
+            </Button>{" "}
+          </span>
+          <span data-testid={`user-name-div-${userServerName}`}>
+            {user.name}
+          </span>
+        </td>
+        <td data-testid="user-row-admin">{user.admin ? "admin" : ""}</td>
+        <td data-testid="user-row-mail">
+          {!server.name && user.mail_address ? (
+            <>
+              <input
+                type="checkbox"
+                className="mail-address-checkbox"
+                style={{ marginRight: "10px" }}
+                value={user.name}
+                onChange={CheckedMail}
+                checked={checkedUsers.includes(user.name)}
+              />
+              {user.mail_address}
+            </>
+          ) : (
+            <>-</>
+          )}
+        </td>
+        <td data-testid="user-row-server">
+          {server.name ? (
+            <p className="text-secondary">{server.name}</p>
+          ) : (
+            <p style={{ color: "lightgrey" }}>[MAIN]</p>
+          )}
+        </td>
+        <td data-testid="user-row-last-activity">
+          {server.last_activity ? timeSince(server.last_activity) : "Never"}
+        </td>
+        <td data-testid="user-row-server-activity">
+          {server.started ? (
+            // Stop Single-user server
+            <>
+              <StopServerButton serverName={server.name} userName={user.name} />
+              <AccessServerButton url={server.url} />
+            </>
+          ) : (
+            // Start Single-user server
+            <>
+              <StartServerButton
+                serverName={server.name}
+                userName={user.name}
+                style={{ marginRight: 20 }}
+              />
+              <a
+                href={
+                  base_url +
+                  "spawn/" +
+                  user.name +
+                  (server.name ? "/" + server.name : "")
+                }
+              >
+                <button
+                  className="btn btn-secondary btn-xs"
+                  style={{ marginRight: 20 }}
+                >
+                  Spawn Page
+                </button>
+              </a>
+            </>
+          )}
+        </td>
+        <EditUserCell user={user} />
+      </tr>,
+      <tr>
+        <td
+          colSpan={6}
+          style={{ padding: 0 }}
+          data-testid={`${userServerName}-td`}
+        >
+          <Collapse in={open} data-testid={`${userServerName}-collapse`}>
+            <CardGroup
+              id={`${userServerName}-card-group`}
+              style={{ width: "100%", margin: "0 auto", float: "none" }}
+            >
+              <Card style={{ width: "100%", padding: 3, margin: "0 auto" }}>
+                <Card.Title>User</Card.Title>
+                <ServerRowTable data={userNoServers} />
+              </Card>
+              <Card style={{ width: "100%", padding: 3, margin: "0 auto" }}>
+                <Card.Title>Server</Card.Title>
+                <ServerRowTable data={server} />
+              </Card>
+            </CardGroup>
+          </Collapse>
+        </td>
+      </tr>,
+    ];
+  };
+
+  let servers = user_data.flatMap((user) => {
+    let userServers = Object.values({
+      "": user.server || {},
+      ...(user.servers || {}),
+    });
+    return userServers.map((server) => [user, server]);
+  });
 
   return (
     <div className="container" data-testid="container">
@@ -94,23 +543,41 @@ const ServerDashboard = (props) => {
       ) : (
         <></>
       )}
-      <div style={{float: "left"}}>
+
+      <div style={{ float: "left" }}>
         <h3>CPU usage</h3>
-        <a href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}>
-          <img data-lazysrc="/hub/grafana_cpu_panel"  id="cpuMetric"/>
+        <a href={grafana_src}>
+          <img
+            src="/hub/grafana_cpu_panel"
+            id="cpuMetric"
+            alt={grafana_img_alt}
+          />
         </a>
       </div>
       <div>
         <h3>Memory usage</h3>
-        <a href={`http://${window.grafana_host}/d/icjpCppik/k8-cluster-detail-dashboard`}>
-          <img data-lazysrc="/hub/grafana_memory_panel"/>
+        <a href={grafana_src}>
+          <img src="/hub/grafana_memory_panel" alt={grafana_img_alt} />
         </a>
       </div>
-      <div className="manage-groups" style={{ float: "right", margin: "20px" }}>
-        <Link to="/groups">{"> Manage Groups"}</Link>
-      </div>
       <div className="server-dashboard-container">
-        <table className="table table-striped table-bordered table-hover">
+        <Row>
+          <Col md={4} style={{ paddingTop: 15 }}>
+            <FormControl
+              type="text"
+              name="user_search"
+              placeholder="Search users"
+              aria-label="user-search"
+              defaultValue={name_filter}
+              onChange={handleSearch}
+            />
+          </Col>
+
+          <Col md="auto" style={{ float: "right", margin: 15 }}>
+            <Link to="/groups">{"> Manage Groups"}</Link>
+          </Col>
+        </Row>
+        <table className="table table-bordered table-hover">
           <thead className="admin-table-head">
             <tr>
               <th id="user-header">
@@ -135,6 +602,14 @@ const ServerDashboard = (props) => {
                   sorts={{ asc: mailAsc, desc: mailDesc }}
                   callback={(method) => setSortMethod(() => method)}
                   testid="mail-sort"
+                />
+              </th>
+              <th id="server-header">
+                Server{" "}
+                <SortHandler
+                  sorts={{ asc: usernameAsc, desc: usernameDesc }}
+                  callback={(method) => setSortMethod(() => method)}
+                  testid="server-sort"
                 />
               </th>
               <th id="last-activity-header">
@@ -165,8 +640,22 @@ const ServerDashboard = (props) => {
               </td>
               <td></td>
               <td>
-                <i id="mail-address-check-all" className="fa fa-square"></i>
-                <button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>
+                {/* <i id="mail-address-check-all" className="fa fa-check-square"></i> */}
+                <input
+                  type="checkbox"
+                  onChange={CheckAll}
+                  checked={equals(checkedUsers, users_with_mail)}
+                />
+                {/*<button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>*/}
+                <Button
+                  id="send-notification"
+                  variant="light"
+                  style={{ marginLeft: "10px" }}
+                  onClick={handleShow}
+                  disabled={checkedUsers.length <= 0}
+                >
+                  Notify
+                </Button>
               </td>
               <td>
                 {/* Start all servers */}
@@ -192,7 +681,7 @@ const ServerDashboard = (props) => {
                       .then((res) => {
                         updateUsers(...slice)
                           .then((data) => {
-                            dispatchPageUpdate(data, page);
+                            dispatchPageUpdate(data, page, name_filter);
                           })
                           .catch(() =>
                             setErrorAlert(`Failed to update users list.`)
@@ -228,7 +717,7 @@ const ServerDashboard = (props) => {
                       .then((res) => {
                         updateUsers(...slice)
                           .then((data) => {
-                            dispatchPageUpdate(data, page);
+                            dispatchPageUpdate(data, page, name_filter);
                           })
                           .catch(() =>
                             setErrorAlert(`Failed to update users list.`)
@@ -252,93 +741,7 @@ const ServerDashboard = (props) => {
                 </Button>
               </td>
             </tr>
-            {user_data.map((e, i) => (
-              <tr key={i + "row"} className="user-row" data-mail-address={e.mail_address ? e.mail_address : ""}>
-                <td data-testid="user-row-name">{e.name}</td>
-                <td data-testid="user-row-admin">{e.admin ? "admin" : ""}</td>
-                <td data-testid="user-row-mail">{
-                  (!e.server && e.mail_address) ? (<><input type="checkbox" className="mail-address-checkbox" style={{marginRight: "10px"}}/>{e.mail_address}</>)
-                    : <>-</>
-                  }
-                </td>
-                <td data-testid="user-row-last-activity">
-                  {e.last_activity ? timeSince(e.last_activity) : "Never"}
-                </td>
-                <td data-testid="user-row-server-activity">
-                  {e.server != null ? (
-                    // Stop Single-user server
-                    <button
-                      className="btn btn-danger btn-xs stop-button"
-                      onClick={() =>
-                        stopServer(e.name)
-                          .then((res) => {
-                            if (res.status < 300) {
-                              updateUsers(...slice)
-                                .then((data) => {
-                                  dispatchPageUpdate(data, page);
-                                })
-                                .catch(() =>
-                                  setErrorAlert(`Failed to update users list.`)
-                                );
-                            } else {
-                              setErrorAlert(`Failed to stop server.`);
-                            }
-                            return res;
-                          })
-                          .catch(() => setErrorAlert(`Failed to stop server.`))
-                      }
-                    >
-                      Stop Server
-                    </button>
-                  ) : (
-                    // Start Single-user server
-                    <button
-                      className="btn btn-primary btn-xs start-button"
-                      onClick={() =>
-                        startServer(e.name)
-                          .then((res) => {
-                            if (res.status < 300) {
-                              updateUsers(...slice)
-                                .then((data) => {
-                                  dispatchPageUpdate(data, page);
-                                })
-                                .catch(() =>
-                                  setErrorAlert(`Failed to update users list.`)
-                                );
-                            } else {
-                              setErrorAlert(`Failed to start server.`);
-                            }
-                            return res;
-                          })
-                          .catch(() => {
-                            setErrorAlert(`Failed to start server.`);
-                          })
-                      }
-                    >
-                      Start Server
-                    </button>
-                  )}
-                </td>
-                <td>
-                  {/* Edit User */}
-                  <button
-                    className="btn btn-primary btn-xs"
-                    style={{ marginRight: 20 }}
-                    onClick={() =>
-                      history.push({
-                        pathname: "/edit-user",
-                        state: {
-                          username: e.name,
-                          has_admin: e.admin,
-                        },
-                      })
-                    }
-                  >
-                    edit user
-                  </button>
-                </td>
-              </tr>
-            ))}
+            {servers.flatMap(([user, server]) => serverRow(user, server))}
           </tbody>
         </table>
         <PaginationFooter
@@ -350,6 +753,7 @@ const ServerDashboard = (props) => {
         />
         <br></br>
       </div>
+      <NotificationModal handleClose={handleClose} />
     </div>
   );
 };
@@ -363,6 +767,8 @@ ServerDashboard.propTypes = {
   startAll: PropTypes.func,
   stopAll: PropTypes.func,
   dispatch: PropTypes.func,
+  getNotificationTemplates: PropTypes.func,
+  sendNotification: PropTypes.func,
   history: PropTypes.shape({
     push: PropTypes.func,
   }),

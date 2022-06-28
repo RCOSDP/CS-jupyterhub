@@ -542,10 +542,16 @@ class BaseHandler(RequestHandler):
             path=url_path_join(self.base_url, 'services'),
             **kwargs,
         )
-        # clear tornado cookie
+        # clear_cookie only accepts a subset of set_cookie's kwargs
+        clear_xsrf_cookie_kwargs = {
+            key: value
+            for key, value in self.settings.get('xsrf_cookie_kwargs', {}).items()
+            if key in {"path", "domain"}
+        }
+
         self.clear_cookie(
             '_xsrf',
-            **self.settings.get('xsrf_cookie_kwargs', {}),
+            **clear_xsrf_cookie_kwargs,
         )
         # Reset _jupyterhub_user
         self._jupyterhub_user = None
@@ -652,29 +658,32 @@ class BaseHandler(RequestHandler):
         next_url = next_url.replace('\\', '%5C')
         proto = get_browser_protocol(self.request)
         host = self.request.host
+        if next_url.startswith("///"):
+            # strip more than 2 leading // down to 2
+            # because urlparse treats that as empty netloc,
+            # whereas browsers treat more than two leading // the same as //,
+            # so netloc is the first non-/ bit
+            next_url = "//" + next_url.lstrip("/")
+        parsed_next_url = urlparse(next_url)
 
         if (next_url + '/').startswith((f'{proto}://{host}/', f'//{host}/',)) or (
             self.subdomain_host
-            and urlparse(next_url).netloc
-            and ("." + urlparse(next_url).netloc).endswith(
+            and parsed_next_url.netloc
+            and ("." + parsed_next_url.netloc).endswith(
                 "." + urlparse(self.subdomain_host).netloc
             )
         ):
             # treat absolute URLs for our host as absolute paths:
-            # below, redirects that aren't strictly paths
-            parsed = urlparse(next_url)
-            next_url = parsed.path
-            if parsed.query:
-                next_url = next_url + '?' + parsed.query
-            if parsed.fragment:
-                next_url = next_url + '#' + parsed.fragment
+            # below, redirects that aren't strictly paths are rejected
+            next_url = parsed_next_url.path
+            if parsed_next_url.query:
+                next_url = next_url + '?' + parsed_next_url.query
+            if parsed_next_url.fragment:
+                next_url = next_url + '#' + parsed_next_url.fragment
+            parsed_next_url = urlparse(next_url)
 
         # if it still has host info, it didn't match our above check for *this* host
-        if next_url and (
-            '://' in next_url
-            or next_url.startswith('//')
-            or not next_url.startswith('/')
-        ):
+        if next_url and (parsed_next_url.netloc or not next_url.startswith('/')):
             self.log.warning("Disallowing redirect outside JupyterHub: %r", next_url)
             next_url = ''
 
@@ -790,13 +799,22 @@ class BaseHandler(RequestHandler):
         # always ensure default roles ('user', 'admin' if admin) are assigned
         # after a successful login
         roles.assign_default_roles(self.db, entity=user)
+
+        # apply authenticator-managed groups
+        if self.authenticator.manage_groups:
+            group_names = authenticated.get("groups")
+            if group_names is not None:
+                user.sync_groups(group_names)
+
         # always set auth_state and commit,
         # because there could be key-rotation or clearing of previous values
         # going on.
         if not self.authenticator.enable_auth_state:
             # auth_state is not enabled. Force None.
             auth_state = None
+
         await user.save_auth_state(auth_state)
+
         return user
 
     async def login_user(self, data=None):
@@ -810,6 +828,7 @@ class BaseHandler(RequestHandler):
             self.set_login_cookie(user)
             self.statsd.incr('login.success')
             self.statsd.timing('login.authenticate.success', auth_timer.ms)
+
             self.log.info("User logged in: %s", user.name)
             user._auth_refreshed = time.monotonic()
             return user
@@ -1526,14 +1545,10 @@ class UserUrlHandler(BaseHandler):
 
         # if request is expecting JSON, assume it's an API request and fail with 503
         # because it won't like the redirect to the pending page
-        if (
-            get_accepted_mimetype(
-                self.request.headers.get('Accept', ''),
-                choices=['application/json', 'text/html'],
-            )
-            == 'application/json'
-            or 'api' in user_path.split('/')
-        ):
+        if get_accepted_mimetype(
+            self.request.headers.get('Accept', ''),
+            choices=['application/json', 'text/html'],
+        ) == 'application/json' or 'api' in user_path.split('/'):
             self._fail_api_request(user_name, server_name)
             return
 
@@ -1615,7 +1630,7 @@ class UserUrlHandler(BaseHandler):
         if redirects:
             self.log.warning("Redirect loop detected on %s", self.request.uri)
             # add capped exponential backoff where cap is 10s
-            await asyncio.sleep(min(1 * (2 ** redirects), 10))
+            await asyncio.sleep(min(1 * (2**redirects), 10))
             # rewrite target url with new `redirects` query value
             url_parts = urlparse(target)
             query_parts = parse_qs(url_parts.query)

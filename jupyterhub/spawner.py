@@ -11,6 +11,7 @@ import shutil
 import signal
 import sys
 import warnings
+from inspect import signature
 from subprocess import Popen
 from tempfile import mkdtemp
 from urllib.parse import urlparse
@@ -96,10 +97,15 @@ class Spawner(LoggingConfigurable):
 
         Used in logging for consistency with named servers.
         """
-        if self.name:
-            return f'{self.user.name}:{self.name}'
+        if self.user:
+            user_name = self.user.name
         else:
-            return self.user.name
+            # no user, only happens in mock tests
+            user_name = "(no user)"
+        if self.name:
+            return f"{user_name}:{self.name}"
+        else:
+            return user_name
 
     @property
     def _failed(self):
@@ -183,17 +189,38 @@ class Spawner(LoggingConfigurable):
     def last_activity(self):
         return self.orm_spawner.last_activity
 
+    # Spawner.server is a wrapper of the ORM orm_spawner.server
+    # make sure it's always in sync with the underlying state
+    # this is harder to do with traitlets,
+    # which do not run on every access, only on set and first-get
+    _server = None
+
     @property
     def server(self):
-        if hasattr(self, '_server'):
+        # always check that we're in sync with orm_spawner
+        if not self.orm_spawner:
+            # no ORM spawner, nothing to check
             return self._server
-        if self.orm_spawner and self.orm_spawner.server:
-            return Server(orm_server=self.orm_spawner.server)
+
+        orm_server = self.orm_spawner.server
+
+        if orm_server is not None and (
+            self._server is None or orm_server is not self._server.orm_server
+        ):
+            # self._server is not connected to orm_spawner
+            self._server = Server(orm_server=self.orm_spawner.server)
+        elif orm_server is None:
+            # no ORM server, clear it
+            self._server = None
+        return self._server
 
     @server.setter
     def server(self, server):
         self._server = server
-        if self.orm_spawner:
+        if self.orm_spawner is not None:
+            if server is not None and server.orm_server == self.orm_spawner.server:
+                # no change
+                return
             if self.orm_spawner.server is not None:
                 # delete the old value
                 db = inspect(self.orm_spawner.server).session
@@ -201,7 +228,13 @@ class Spawner(LoggingConfigurable):
             if server is None:
                 self.orm_spawner.server = None
             else:
+                if server.orm_server is None:
+                    self.log.warning(f"No ORM server for {self._log_name}")
                 self.orm_spawner.server = server.orm_server
+        elif server is not None:
+            self.log.warning(
+                f"Setting Spawner.server for {self._log_name} with no underlying orm_spawner"
+            )
 
     @property
     def name(self):
@@ -423,6 +456,13 @@ class Spawner(LoggingConfigurable):
 
     def _default_options_from_form(self, form_data):
         return form_data
+
+    def run_options_from_form(self, form_data):
+        sig = signature(self.options_from_form)
+        if 'spawner' in sig.parameters:
+            return self.options_from_form(form_data, spawner=self)
+        else:
+            return self.options_from_form(form_data)
 
     def options_from_query(self, query_data):
         """Interpret query arguments passed to /spawn
@@ -836,9 +876,6 @@ class Spawner(LoggingConfigurable):
 
         if self.server:
             base_url = self.server.base_url
-            if self.ip or self.port:
-                self.server.ip = self.ip
-                self.server.port = self.port
             env['JUPYTERHUB_SERVICE_PREFIX'] = self.server.base_url
         else:
             # this should only occur in mock/testing scenarios

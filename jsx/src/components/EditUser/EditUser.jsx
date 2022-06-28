@@ -26,9 +26,10 @@ const EditUser = (props) => {
     return <></>;
   }
 
-  var { username, has_admin } = props.location.state;
+  var { username, mail_address, has_admin } = props.location.state;
 
   var [updatedUsername, setUpdatedUsername] = useState(""),
+    [updatedMailAddress, setUpdatesMailAddress] = useState(mail_address),
     [admin, setAdmin] = useState(has_admin);
 
   return (
@@ -71,7 +72,20 @@ const EditUser = (props) => {
                         setUpdatedUsername(e.target.value);
                       }}
                     ></textarea>
-                    <br></br>
+                    <br/>
+                    <label for="mailAddressTextarea"> Mail Address </label>
+                    <br/>
+                    <textarea
+                      className="form-control"
+                      data-testid="edit-mail-address-input"
+                      id="mailAddressTextarea"
+                      rows="3"
+                      placeholder="updated mail address"
+                      onBlur={(e) => {
+                        setUpdatesMailAddress(e.target.value);
+                      }}
+                    >{mail_address}</textarea>
+                    <br/>
                     <input
                       className="form-check-input"
                       checked={admin}
@@ -122,17 +136,21 @@ const EditUser = (props) => {
                   className="btn btn-primary"
                   onClick={(e) => {
                     e.preventDefault();
-                    if (updatedUsername == "" && admin == has_admin) {
+                    if (updatedUsername == "" && updatedMailAddress == mail_address && admin == has_admin) {
                       noChangeEvent();
                       return;
-                    } else if (updatedUsername != "") {
+                    } else if (updatedUsername != "" || updatedMailAddress != mail_address) {
                       if (
+                          (updatedUsername == "" ||
                         updatedUsername.length > 2 &&
-                        /[!@#$%^&*(),.?":{}|<>]/g.test(updatedUsername) == false
+                        /[!@#$%^&*(),.?":{}|<>]/g.test(updatedUsername) == false) &&
+                          (updatedMailAddress == mail_address || updatedMailAddress.match(/^\S+\@\S+$/) != null
+                          )
                       ) {
                         editUser(
                           username,
                           updatedUsername != "" ? updatedUsername : username,
+                          updatedMailAddress,
                           admin
                         )
                           .then((data) => {
@@ -156,7 +174,7 @@ const EditUser = (props) => {
                         );
                       }
                     } else {
-                      editUser(username, username, admin)
+                      editUser(username, username, mail_address, admin)
                         .then((data) => {
                           data.status < 300
                             ? updateUsers(0, limit)
@@ -188,6 +206,7 @@ EditUser.propTypes = {
   location: PropTypes.shape({
     state: PropTypes.shape({
       username: PropTypes.string,
+      mail_address: PropTypes.string,
       has_admin: PropTypes.bool,
     }),
   }),

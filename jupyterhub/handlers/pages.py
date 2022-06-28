@@ -21,6 +21,7 @@ from ..utils import maybe_future
 from ..utils import url_path_join
 from .base import BaseHandler
 
+
 class RootHandler(BaseHandler):
     """Render the Hub root page.
 
@@ -152,7 +153,7 @@ class SpawnHandler(BaseHandler):
             self.redirect(url)
             return
 
-        spawner = user.spawners[server_name]
+        spawner = user.get_spawner(server_name, replace_failed=True)
 
         pending_url = self._get_pending_url(user, server_name)
 
@@ -238,7 +239,7 @@ class SpawnHandler(BaseHandler):
             if user is None:
                 raise web.HTTPError(404, "No such user: %s" % for_user)
 
-        spawner = user.spawners[server_name]
+        spawner = user.get_spawner(server_name, replace_failed=True)
 
         if spawner.ready:
             raise web.HTTPError(400, "%s is already running" % (spawner._log_name))
@@ -256,7 +257,7 @@ class SpawnHandler(BaseHandler):
             self.log.debug(
                 "Triggering spawn with supplied form options for %s", spawner._log_name
             )
-            options = await maybe_future(spawner.options_from_form(form_options))
+            options = await maybe_future(spawner.run_options_from_form(form_options))
             pending_url = self._get_pending_url(user, server_name)
             return await self._wrap_spawn_single_user(
                 user, server_name, spawner, pending_url, options
@@ -370,13 +371,9 @@ class SpawnPendingHandler(BaseHandler):
         auth_state = await user.get_auth_state()
 
         # First, check for previous failure.
-        if (
-            not spawner.active
-            and spawner._spawn_future
-            and spawner._spawn_future.done()
-            and spawner._spawn_future.exception()
-        ):
-            # Condition: spawner not active and _spawn_future exists and contains an Exception
+        if not spawner.active and spawner._failed:
+            # Condition: spawner not active and last spawn failed
+            # (failure is available as spawner._spawn_future.exception()).
             # Implicit spawn on /user/:name is not allowed if the user's last spawn failed.
             # We should point the user to Home if the most recent spawn failed.
             exc = spawner._spawn_future.exception()
@@ -454,15 +451,21 @@ class SpawnPendingHandler(BaseHandler):
         next_url = self.get_next_url(default=user.server_url(server_name))
         self.redirect(next_url)
 
+
 class GrafanaImageHandler(BaseHandler):
     @web.authenticated
     @needs_scope('admin:servers')
     async def get(self):
         grafana_host = os.environ.get('GRAFANA_INTERNAL_HOST')
         from_time = (int(time.time()) - 1800) * 1000
-        res = requests.get(
-            f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
-            headers={"Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')},
+        res = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: requests.get(
+                f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
+                headers={
+                    "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
+                },
+            ),
         )
         self.write(res.content)
         self.set_header("Content-type", "image/png")
@@ -488,6 +491,7 @@ class AdminHandler(BaseHandler):
     @needs_scope('admin:servers')
     async def get(self):
         auth_state = await self.current_user.get_auth_state()
+        limit = self.get_argument('limit', None)
         html = await self.render_template(
             'admin.html',
             current_user=self.current_user,
@@ -496,9 +500,9 @@ class AdminHandler(BaseHandler):
             allow_named_servers=self.allow_named_servers,
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version=f'{__version__} {self.version_hash}',
-            api_page_limit=self.settings["api_page_default_limit"],
+            api_page_limit=limit if limit else self.settings["api_page_default_limit"],
             base_url=self.settings["base_url"],
-            grafana_host=os.environ.get('GRAFANA_EXTERNAL_HOST')
+            grafana_host=os.environ.get('GRAFANA_EXTERNAL_HOST'),
         )
         self.finish(html)
 
@@ -527,7 +531,7 @@ class TokenPageHandler(BaseHandler):
                 continue
             if not token.client_id:
                 # token should have been deleted when client was deleted
-                self.log.warning("Deleting stale oauth token {token}")
+                self.log.warning(f"Deleting stale oauth token {token}")
                 self.db.delete(token)
                 self.db.commit()
                 continue

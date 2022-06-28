@@ -473,6 +473,42 @@ async def test_get_users_state_filter(app, state):
 
 
 @mark.user
+async def test_get_users_name_filter(app):
+    db = app.db
+
+    add_user(db, app=app, name='q')
+    add_user(db, app=app, name='qr')
+    add_user(db, app=app, name='qrs')
+    add_user(db, app=app, name='qrst')
+    added_usernames = {'q', 'qr', 'qrs', 'qrst'}
+
+    r = await api_request(app, 'users')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert added_usernames.intersection(response_users) == added_usernames
+
+    r = await api_request(app, 'users?name_filter=q')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['q', 'qr', 'qrs', 'qrst']
+
+    r = await api_request(app, 'users?name_filter=qr')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['qr', 'qrs', 'qrst']
+
+    r = await api_request(app, 'users?name_filter=qrs')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['qrs', 'qrst']
+
+    r = await api_request(app, 'users?name_filter=qrst')
+    assert r.status_code == 200
+    response_users = [u.get("name") for u in r.json()]
+    assert response_users == ['qrst']
+
+
+@mark.user
 async def test_get_self(app):
     db = app.db
 
@@ -1031,7 +1067,7 @@ async def test_never_spawn(app, no_patience, never_spawn):
     assert not app_user.spawner._spawn_pending
     status = await app_user.spawner.poll()
     assert status is not None
-    # failed spawn should decrements pending count
+    # failed spawn should decrement pending count
     assert app.users.count_active_users()['pending'] == 0
 
 
@@ -1040,8 +1076,15 @@ async def test_bad_spawn(app, bad_spawn):
     name = 'prim'
     user = add_user(db, app=app, name=name)
     r = await api_request(app, 'users', name, 'server', method='post')
+    # check that we don't re-use spawners that failed
+    user.spawners[''].reused = True
     assert r.status_code == 500
     assert app.users.count_active_users()['pending'] == 0
+
+    r = await api_request(app, 'users', name, 'server', method='post')
+    # check that we don't re-use spawners that failed
+    spawner = user.spawners['']
+    assert not getattr(spawner, 'reused', False)
 
 
 async def test_spawn_nosuch_user(app):
@@ -1807,6 +1850,38 @@ async def test_group_add_delete_users(app):
     assert sorted(u.name for u in group.users) == sorted(names[2:])
 
 
+@mark.group
+async def test_auth_managed_groups(request, app, group, user):
+    group.users.append(user)
+    app.db.commit()
+    app.authenticator.manage_groups = True
+    request.addfinalizer(lambda: setattr(app.authenticator, "manage_groups", False))
+    # create groups
+    r = await api_request(app, 'groups', method='post')
+    assert r.status_code == 400
+    r = await api_request(app, 'groups/newgroup', method='post')
+    assert r.status_code == 400
+    # delete groups
+    r = await api_request(app, f'groups/{group.name}', method='delete')
+    assert r.status_code == 400
+    # add users to group
+    r = await api_request(
+        app,
+        f'groups/{group.name}/users',
+        method='post',
+        data=json.dumps({"users": [user.name]}),
+    )
+    assert r.status_code == 400
+    # remove users from group
+    r = await api_request(
+        app,
+        f'groups/{group.name}/users',
+        method='delete',
+        data=json.dumps({"users": [user.name]}),
+    )
+    assert r.status_code == 400
+
+
 # -----------------
 # Service API tests
 # -----------------
@@ -2065,14 +2140,23 @@ def test_shutdown(app):
         )
         return r
 
-    real_stop = loop.stop
+    real_stop = loop.asyncio_loop.stop
 
     def stop():
         stop.called = True
         loop.call_later(1, real_stop)
 
-    with mock.patch.object(loop, 'stop', stop):
+    real_cleanup = app.cleanup
+
+    def cleanup():
+        cleanup.called = True
+        return real_cleanup()
+
+    app.cleanup = cleanup
+
+    with mock.patch.object(loop.asyncio_loop, 'stop', stop):
         r = loop.run_sync(shutdown, timeout=5)
     r.raise_for_status()
     reply = r.json()
+    assert cleanup.called
     assert stop.called

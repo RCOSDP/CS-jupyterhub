@@ -1,6 +1,7 @@
 import React from "react";
 import "@testing-library/jest-dom";
 import { act } from "react-dom/test-utils";
+import userEvent from "@testing-library/user-event";
 import { render, screen, fireEvent } from "@testing-library/react";
 import { HashRouter, Switch } from "react-router-dom";
 import { Provider, useSelector } from "react-redux";
@@ -9,6 +10,9 @@ import { createStore } from "redux";
 import regeneratorRuntime from "regenerator-runtime";
 
 import ServerDashboard from "./ServerDashboard";
+import * as sinon from "sinon";
+
+let clock;
 
 jest.mock("react-redux", () => ({
   ...jest.requireActual("react-redux"),
@@ -26,6 +30,8 @@ var serverDashboardJsx = (spy) => (
           stopServer={spy}
           startAll={spy}
           stopAll={spy}
+          getNotificationTemplates={spy}
+          sendNotification={spy}
         />
       </Switch>
     </HashRouter>
@@ -45,6 +51,7 @@ var mockAppState = () => ({
 });
 
 beforeEach(() => {
+  clock = sinon.useFakeTimers();
   useSelector.mockImplementation((callback) => {
     return callback(mockAppState());
   });
@@ -52,6 +59,7 @@ beforeEach(() => {
 
 afterEach(() => {
   useSelector.mockClear();
+  clock.restore();
 });
 
 test("Renders", async () => {
@@ -71,8 +79,8 @@ test("Renders users from props.user_data into table", async () => {
     render(serverDashboardJsx(callbackSpy));
   });
 
-  let foo = screen.getByText("foo");
-  let bar = screen.getByText("bar");
+  let foo = screen.getByTestId("user-name-div-foo");
+  let bar = screen.getByTestId("user-name-div-bar");
 
   expect(foo).toBeVisible();
   expect(bar).toBeVisible();
@@ -151,12 +159,12 @@ test("Sorts according to username", async () => {
   fireEvent.click(handler);
 
   let first = screen.getAllByTestId("user-row-name")[0];
-  expect(first.textContent).toBe("bar");
+  expect(first.textContent).toContain("bar");
 
   fireEvent.click(handler);
 
   first = screen.getAllByTestId("user-row-name")[0];
-  expect(first.textContent).toBe("foo");
+  expect(first.textContent).toContain("foo");
 });
 
 test("Sorts according to admin", async () => {
@@ -189,12 +197,12 @@ test("Sorts according to last activity", async () => {
   fireEvent.click(handler);
 
   let first = screen.getAllByTestId("user-row-name")[0];
-  expect(first.textContent).toBe("foo");
+  expect(first.textContent).toContain("foo");
 
   fireEvent.click(handler);
 
   first = screen.getAllByTestId("user-row-name")[0];
-  expect(first.textContent).toBe("bar");
+  expect(first.textContent).toContain("bar");
 });
 
 test("Sorts according to server status (running/not running)", async () => {
@@ -208,12 +216,53 @@ test("Sorts according to server status (running/not running)", async () => {
   fireEvent.click(handler);
 
   let first = screen.getAllByTestId("user-row-name")[0];
-  expect(first.textContent).toBe("foo");
+  expect(first.textContent).toContain("foo");
 
   fireEvent.click(handler);
 
   first = screen.getAllByTestId("user-row-name")[0];
-  expect(first.textContent).toBe("bar");
+  expect(first.textContent).toContain("bar");
+});
+
+test("Shows server details with button click", async () => {
+  let callbackSpy = mockAsync();
+
+  await act(async () => {
+    render(serverDashboardJsx(callbackSpy));
+  });
+  let button = screen.getByTestId("foo-collapse-button");
+  let collapse = screen.getByTestId("foo-collapse");
+  let collapseBar = screen.getByTestId("bar-collapse");
+
+  // expect().toBeVisible does not work here with collapse.
+  expect(collapse).toHaveClass("collapse");
+  expect(collapse).not.toHaveClass("show");
+  expect(collapseBar).not.toHaveClass("show");
+
+  await act(async () => {
+    fireEvent.click(button);
+  });
+  clock.tick(400);
+
+  expect(collapse).toHaveClass("collapse show");
+  expect(collapseBar).not.toHaveClass("show");
+
+  await act(async () => {
+    fireEvent.click(button);
+  });
+  clock.tick(400);
+
+  expect(collapse).toHaveClass("collapse");
+  expect(collapse).not.toHaveClass("show");
+  expect(collapseBar).not.toHaveClass("show");
+
+  await act(async () => {
+    fireEvent.click(button);
+  });
+  clock.tick(400);
+
+  expect(collapse).toHaveClass("collapse show");
+  expect(collapseBar).not.toHaveClass("show");
 });
 
 test("Renders nothing if required data is not available", async () => {
@@ -248,6 +297,8 @@ test("Shows a UI error dialogue when start all servers fails", async () => {
               stopServer={spy}
               startAll={rejectSpy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -282,6 +333,8 @@ test("Shows a UI error dialogue when stop all servers fails", async () => {
               stopServer={spy}
               startAll={spy}
               stopAll={rejectSpy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -316,6 +369,8 @@ test("Shows a UI error dialogue when start user server fails", async () => {
               stopServer={spy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -350,6 +405,8 @@ test("Shows a UI error dialogue when start user server returns an improper statu
               stopServer={spy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -384,6 +441,8 @@ test("Shows a UI error dialogue when stop user servers fails", async () => {
               stopServer={rejectSpy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -418,6 +477,8 @@ test("Shows a UI error dialogue when stop user server returns an improper status
               stopServer={rejectSpy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -434,4 +495,45 @@ test("Shows a UI error dialogue when stop user server returns an improper status
   let errorDialog = screen.getByText("Failed to stop server.");
 
   expect(errorDialog).toBeVisible();
+});
+
+test("Search for user calls updateUsers with name filter", async () => {
+  let spy = mockAsync();
+  let mockUpdateUsers = jest.fn((offset, limit, name_filter) => {
+    return Promise.resolve([]);
+  });
+  await act(async () => {
+    render(
+      <Provider store={createStore(() => {}, {})}>
+        <HashRouter>
+          <Switch>
+            <ServerDashboard
+              updateUsers={mockUpdateUsers}
+              shutdownHub={spy}
+              startServer={spy}
+              stopServer={spy}
+              startAll={spy}
+              stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
+            />
+          </Switch>
+        </HashRouter>
+      </Provider>
+    );
+  });
+
+  let search = screen.getByLabelText("user-search");
+
+  userEvent.type(search, "a");
+  expect(search.value).toEqual("a");
+  clock.tick(400);
+  expect(mockUpdateUsers.mock.calls[1][2]).toEqual("a");
+  expect(mockUpdateUsers.mock.calls).toHaveLength(2);
+
+  userEvent.type(search, "b");
+  expect(search.value).toEqual("ab");
+  clock.tick(400);
+  expect(mockUpdateUsers.mock.calls[2][2]).toEqual("ab");
+  expect(mockUpdateUsers.mock.calls).toHaveLength(3);
 });

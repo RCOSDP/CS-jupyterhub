@@ -2,17 +2,20 @@ import { withProps } from "recompose";
 import { jhapiRequest } from "./jhapiUtil";
 
 const withAPI = withProps(() => ({
-  updateUsers: (offset, limit) =>
-    jhapiRequest(`/users?offset=${offset}&limit=${limit}`, "GET").then((data) =>
-      data.json()
-    ),
+  updateUsers: (offset, limit, name_filter) =>
+    jhapiRequest(
+      `/users?offset=${offset}&limit=${limit}&name_filter=${name_filter || ""}`,
+      "GET"
+    ).then((data) => data.json()),
   updateGroups: (offset, limit) =>
     jhapiRequest(`/groups?offset=${offset}&limit=${limit}`, "GET").then(
       (data) => data.json()
     ),
   shutdownHub: () => jhapiRequest("/shutdown", "POST"),
-  startServer: (name) => jhapiRequest("/users/" + name + "/server", "POST"),
-  stopServer: (name) => jhapiRequest("/users/" + name + "/server", "DELETE"),
+  startServer: (name, serverName = "") =>
+    jhapiRequest("/users/" + name + "/servers/" + (serverName || ""), "POST"),
+  stopServer: (name, serverName = "") =>
+    jhapiRequest("/users/" + name + "/servers/" + (serverName || ""), "DELETE"),
   startAll: (names) =>
     names.map((e) => jhapiRequest("/users/" + e + "/server", "POST")),
   stopAll: (names) =>
@@ -25,9 +28,10 @@ const withAPI = withProps(() => ({
   deleteGroup: (name) => jhapiRequest("/groups/" + name, "DELETE"),
   addUsers: (usernames, admin) =>
     jhapiRequest("/users", "POST", { usernames, admin }),
-  editUser: (username, updated_username, admin) =>
+  editUser: (username, updated_username, updated_mail_address, admin) =>
     jhapiRequest("/users/" + username, "PATCH", {
       name: updated_username,
+      mail_address: updated_mail_address,
       admin,
     }),
   deleteUser: (username) => jhapiRequest("/users/" + username, "DELETE"),
@@ -43,6 +47,10 @@ const withAPI = withProps(() => ({
   noChangeEvent: () => {
     return null;
   },
+  getNotificationTemplates: () =>
+    jhapiRequest("/notifications/templates", "GET").then((data) => data.json()),
+  sendNotification: (to, title, body) =>
+    jhapiRequest("/notifications", "PUT", { to: to, title: title, body: body }),
   //
   refreshGroupsData: () =>
     jhapiRequest("/groups", "GET").then((data) => data.json()),
