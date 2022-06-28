@@ -567,7 +567,7 @@ const ServerDashboard = (props) => {
       </div>
       <div className="server-dashboard-container">
         <Row>
-          <Col md={4}>
+          <Col md={4} style={{ paddingTop: 15 }}>
             <FormControl
               type="text"
               name="user_search"
