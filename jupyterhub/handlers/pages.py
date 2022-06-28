@@ -486,6 +486,7 @@ class AdminHandler(BaseHandler):
     @needs_scope('admin:servers')
     async def get(self):
         auth_state = await self.current_user.get_auth_state()
+        limit = self.get_argument('limit', None)
         html = await self.render_template(
             'admin.html',
             current_user=self.current_user,
@@ -494,7 +495,7 @@ class AdminHandler(BaseHandler):
             allow_named_servers=self.allow_named_servers,
             named_server_limit_per_user=self.named_server_limit_per_user,
             server_version=f'{__version__} {self.version_hash}',
-            api_page_limit=self.settings["api_page_default_limit"],
+            api_page_limit=limit if limit else self.settings["api_page_default_limit"],
             base_url=self.settings["base_url"],
             grafana_host=os.environ.get('GRAFANA_EXTERNAL_HOST'),
         )
