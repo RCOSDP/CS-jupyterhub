@@ -458,9 +458,14 @@ class GrafanaImageHandler(BaseHandler):
     async def get(self):
         grafana_host = os.environ.get('GRAFANA_INTERNAL_HOST')
         from_time = (int(time.time()) - 1800) * 1000
-        res = requests.get(
-            f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
-            headers={"Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')},
+        res = await asyncio.get_event_loop().run_in_executor(
+            None,
+            lambda: requests.get(
+                f"http://{grafana_host}/render/d-solo/icjpCppik/k8-cluster-detail-dashboard?orgId=1&refresh=1m&var-Node=All&panelId={self.panel_id()}&width=300&height=300&tz=Asia%2FTokyo&from={from_time}",
+                headers={
+                    "Authorization": 'Bearer ' + os.environ.get('GRAFANA_API_KEY')
+                },
+            ),
         )
         self.write(res.content)
         self.set_header("Content-type", "image/png")

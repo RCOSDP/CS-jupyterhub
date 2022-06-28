@@ -100,14 +100,7 @@ const ServerDashboard = (props) => {
     "http://" +
     window.grafana_host +
     "/d/icjpCppik/k8-cluster-detail-dashboard";
-  const grafana_img_alt = "";
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      grafana_img_alt = "user not logged in";
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, []);
+  const grafana_img_alt = "user not logged in";
 
   var {
     updateUsers,
@@ -141,13 +134,15 @@ const ServerDashboard = (props) => {
     useEffect(() => {
       getNotificationTemplates()
         .then((data) => {
-          setTemplates(data.templates);
-          var tmpDefault = data.templates.find((t) => {
-            return t.default === true;
-          });
-          if (tmpDefault) {
-            setTitle(tmpDefault.subject);
-            setBody(tmpDefault.body);
+          if (data.templates) {
+            setTemplates(data.templates);
+            var tmpDefault = data.templates.find((t) => {
+              return t.default === true;
+            });
+            if (tmpDefault) {
+              setTitle(tmpDefault.subject);
+              setBody(tmpDefault.body);
+            }
           }
         })
         .catch(setTemplates([]));
@@ -772,6 +767,8 @@ ServerDashboard.propTypes = {
   startAll: PropTypes.func,
   stopAll: PropTypes.func,
   dispatch: PropTypes.func,
+  getNotificationTemplates: PropTypes.func,
+  sendNotification: PropTypes.func,
   history: PropTypes.shape({
     push: PropTypes.func,
   }),
@@ -812,14 +809,6 @@ const SortHandler = (props) => {
     </div>
   );
 };
-
-function ReLoadImages() {
-  $("img[data-lazysrc]").each(function () {
-    //* set the img src from data-src
-    $(this).attr("src", $(this).attr("data-lazysrc"));
-    $(this).attr("alt", "user not logged in");
-  });
-}
 
 SortHandler.propTypes = {
   sorts: PropTypes.object,
