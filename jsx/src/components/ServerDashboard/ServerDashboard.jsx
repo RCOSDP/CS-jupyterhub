@@ -69,8 +69,8 @@ const ServerDashboard = (props) => {
   var slice = [page * limit, limit, name_filter];
 
   const dispatch = useDispatch();
-  const [isCheck, setIsCheck] = useState([]);
-  var all_mail_address = [];
+  const [checkedUsers, setCheckedUsers] = useState([]);
+  var users_with_mail = [];
 
   const equals = (a, b) =>
     a.length === b.length && a.every((v, i) => v === b[i]);
@@ -79,19 +79,19 @@ const ServerDashboard = (props) => {
     const { value, checked } = e.target;
     var tmpUsers = [];
     if (checked) {
-      tmpUsers = [...isCheck, value];
+      tmpUsers = [...checkedUsers, value];
     } else {
-      tmpUsers = isCheck.filter((item) => item !== value);
+      tmpUsers = checkedUsers.filter((item) => item !== value);
     }
-    setIsCheck(tmpUsers);
+    setCheckedUsers(tmpUsers);
   };
 
   const CheckAll = (e) => {
     const { checked } = e.target;
     if (checked) {
-      setIsCheck(all_mail_address);
+      setCheckedUsers(users_with_mail);
     } else {
-      setIsCheck([]);
+      setCheckedUsers([]);
     }
   };
 
@@ -134,14 +134,14 @@ const ServerDashboard = (props) => {
 
   const NotificationModal = (props) => {
     const [notificationState, setNotificationState] = useState({});
-    const [templates, setTemplate] = useState(null);
+    const [templates, setTemplates] = useState(null);
     const [body, setBody] = useState("");
     const [title, setTitle] = useState("");
 
     useEffect(() => {
       getNotificationTemplates()
         .then((data) => {
-          setTemplate(data.templates);
+          setTemplates(data.templates);
           var tmpDefault = data.templates.find((t) => {
             return t.default === true;
           });
@@ -150,10 +150,10 @@ const ServerDashboard = (props) => {
             setBody(tmpDefault.body);
           }
         })
-        .catch(setTemplate([]));
+        .catch(setTemplates([]));
     }, []);
 
-    const choiceTemplate = (e) => {
+    const selectTemplate = (e) => {
       if (e.target.value != "") {
         setNotificationState(
           templates.find((t) => {
@@ -176,7 +176,7 @@ const ServerDashboard = (props) => {
     };
 
     const callSendNotification = () => {
-      sendNotification(isCheck, title, body);
+      sendNotification(checkedUsers, title, body);
       props.handleClose();
     };
 
@@ -185,7 +185,7 @@ const ServerDashboard = (props) => {
       templateButton = (
         <div class="notification-templates">
           Template:{" "}
-          <select onChange={choiceTemplate}>
+          <select onChange={selectTemplate}>
             <option value="">テンプレートを選択してください。</option>
             {templates.map((template) => (
               <option value={template.name}>{template.name}</option>
@@ -284,7 +284,9 @@ const ServerDashboard = (props) => {
   if (!user_data) {
     return <div data-testid="no-show"></div>;
   } else {
-    all_mail_address = user_data.flatMap((u) => u.name);
+    users_with_mail = user_data
+      .filter((u) => u.mail_address)
+      .flatMap((u) => u.name);
   }
 
   const StopServerButton = ({ serverName, userName }) => {
@@ -439,7 +441,7 @@ const ServerDashboard = (props) => {
                 style={{ marginRight: "10px" }}
                 value={user.name}
                 onChange={CheckedMail}
-                checked={isCheck.includes(user.name)}
+                checked={checkedUsers.includes(user.name)}
               />
               {user.mail_address}
             </>
@@ -647,7 +649,7 @@ const ServerDashboard = (props) => {
                 <input
                   type="checkbox"
                   onChange={CheckAll}
-                  checked={equals(isCheck, all_mail_address)}
+                  checked={equals(checkedUsers, users_with_mail)}
                 />
                 {/*<button id="send-notification" className="btn btn-default" style={{marginLeft: "10px"}} disabled>Notify</button>*/}
                 <Button
@@ -655,7 +657,7 @@ const ServerDashboard = (props) => {
                   variant="light"
                   style={{ marginLeft: "10px" }}
                   onClick={handleShow}
-                  disabled={isCheck.length <= 0}
+                  disabled={checkedUsers.length <= 0}
                 >
                   Notify
                 </Button>
