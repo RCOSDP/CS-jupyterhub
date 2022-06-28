@@ -30,6 +30,8 @@ var serverDashboardJsx = (spy) => (
           stopServer={spy}
           startAll={spy}
           stopAll={spy}
+          getNotificationTemplates={spy}
+          sendNotification={spy}
         />
       </Switch>
     </HashRouter>
@@ -295,6 +297,8 @@ test("Shows a UI error dialogue when start all servers fails", async () => {
               stopServer={spy}
               startAll={rejectSpy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -329,6 +333,8 @@ test("Shows a UI error dialogue when stop all servers fails", async () => {
               stopServer={spy}
               startAll={spy}
               stopAll={rejectSpy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -363,6 +369,8 @@ test("Shows a UI error dialogue when start user server fails", async () => {
               stopServer={spy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -397,6 +405,8 @@ test("Shows a UI error dialogue when start user server returns an improper statu
               stopServer={spy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -431,6 +441,8 @@ test("Shows a UI error dialogue when stop user servers fails", async () => {
               stopServer={rejectSpy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -465,6 +477,8 @@ test("Shows a UI error dialogue when stop user server returns an improper status
               stopServer={rejectSpy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>
@@ -500,6 +514,8 @@ test("Search for user calls updateUsers with name filter", async () => {
               stopServer={spy}
               startAll={spy}
               stopAll={spy}
+              getNotificationTemplates={spy}
+              sendNotification={spy}
             />
           </Switch>
         </HashRouter>

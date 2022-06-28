@@ -134,13 +134,15 @@ const ServerDashboard = (props) => {
     useEffect(() => {
       getNotificationTemplates()
         .then((data) => {
-          setTemplates(data.templates);
-          var tmpDefault = data.templates.find((t) => {
-            return t.default === true;
-          });
-          if (tmpDefault) {
-            setTitle(tmpDefault.subject);
-            setBody(tmpDefault.body);
+          if (data.templates) {
+            setTemplates(data.templates);
+            var tmpDefault = data.templates.find((t) => {
+              return t.default === true;
+            });
+            if (tmpDefault) {
+              setTitle(tmpDefault.subject);
+              setBody(tmpDefault.body);
+            }
           }
         })
         .catch(setTemplates([]));
@@ -765,6 +767,8 @@ ServerDashboard.propTypes = {
   startAll: PropTypes.func,
   stopAll: PropTypes.func,
   dispatch: PropTypes.func,
+  getNotificationTemplates: PropTypes.func,
+  sendNotification: PropTypes.func,
   history: PropTypes.shape({
     push: PropTypes.func,
   }),
