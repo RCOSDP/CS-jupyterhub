@@ -100,14 +100,7 @@ const ServerDashboard = (props) => {
     "http://" +
     window.grafana_host +
     "/d/icjpCppik/k8-cluster-detail-dashboard";
-  const grafana_img_alt = "";
-
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      grafana_img_alt = "user not logged in";
-    }, 3000);
-    return () => clearTimeout(timer);
-  }, []);
+  const grafana_img_alt = "user not logged in";
 
   var {
     updateUsers,
@@ -812,14 +805,6 @@ const SortHandler = (props) => {
     </div>
   );
 };
-
-function ReLoadImages() {
-  $("img[data-lazysrc]").each(function () {
-    //* set the img src from data-src
-    $(this).attr("src", $(this).attr("data-lazysrc"));
-    $(this).attr("alt", "user not logged in");
-  });
-}
 
 SortHandler.propTypes = {
   sorts: PropTypes.object,
