@@ -85,6 +85,10 @@ class UserListAPIHandler(APIHandler):
     def get(self):
         state_filter = self.get_argument("state", None)
         name_filter = self.get_argument("name_filter", None)
+        include_stopped_servers = (
+            self.get_argument("include_stopped_servers", None) is not None
+        )
+
         offset, limit = self.get_api_pagination()
 
         # post_filter
@@ -158,7 +162,9 @@ class UserListAPIHandler(APIHandler):
         user_list = []
         for u in query:
             if post_filter is None or post_filter(u):
-                user_model = self.user_model(u)
+                user_model = self.user_model(
+                    u, include_stopped_servers=include_stopped_servers
+                )
                 if user_model:
                     user_list.append(user_model)
 

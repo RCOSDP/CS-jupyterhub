@@ -191,22 +191,41 @@ class APIHandler(BaseHandler):
             json.dumps({'status': status_code, 'message': message or status_message})
         )
 
-    def server_model(self, spawner):
+    def server_model(self, spawner, *, user=None):
         """Get the JSON model for a Spawner
-        Assume server permission already granted"""
+        Assume server permission already granted
+        """
+        if isinstance(spawner, orm.Spawner):
+            # if an orm.Spawner is passed,
+            # create a model for a stopped Spawner
+            # not all info is available without the higher-level Spawner wrapper
+            orm_spawner = spawner
+            pending = None
+            ready = False
+            user = user
+            if user is None:
+                raise RuntimeError("Must specify User with orm.Spawner")
+            state = orm_spawner.state
+        else:
+            orm_spawner = spawner.orm_spawner
+            pending = spawner.pending
+            ready = spawner.ready
+            user = spawner.user
+            state = spawner.get_state()
+
         model = {
-            'name': spawner.name,
-            'last_activity': isoformat(spawner.orm_spawner.last_activity),
-            'started': isoformat(spawner.orm_spawner.started),
-            'pending': spawner.pending,
-            'ready': spawner.ready,
-            'url': url_path_join(spawner.user.url, spawner.name, '/'),
+            'name': orm_spawner.name,
+            'last_activity': isoformat(orm_spawner.last_activity),
+            'started': isoformat(orm_spawner.started),
+            'pending': pending,
+            'ready': ready,
+            'url': url_path_join(user.url, spawner.name, '/'),
             'user_options': spawner.user_options,
-            'progress_url': spawner._progress_url,
+            'progress_url': user.progress_url(spawner.name),
         }
         scope_filter = self.get_scope_filter('admin:server_state')
         if scope_filter(spawner, kind='server'):
-            model['state'] = spawner.get_state()
+            model['state'] = state
         return model
 
     def token_model(self, token):
@@ -250,7 +269,7 @@ class APIHandler(BaseHandler):
             keys.update(allowed_keys)
         return model
 
-    def user_model(self, user):
+    def user_model(self, user, *, include_stopped_servers=False):
         """Get the JSON model for a User object"""
         if isinstance(user, orm.User):
             user = self.users[user.id]
@@ -295,18 +314,25 @@ class APIHandler(BaseHandler):
             if '' in user.spawners and 'pending' in allowed_keys:
                 model['pending'] = user.spawners[''].pending
 
-            servers = model['servers'] = {}
-            scope_filter = self.get_scope_filter('read:servers')
-            for name, spawner in user.spawners.items():
-                # include 'active' servers, not just ready
-                # (this includes pending events)
-                if spawner.active and scope_filter(spawner, kind='server'):
-                    servers[name] = self.server_model(spawner)
-            if not servers and 'servers' not in allowed_keys:
-                # omit servers if no access
-                # leave present and empty
-                # if request has access to read servers in general
-                model.pop('servers')
+            if 'servers' in allowed_keys:
+                servers = model['servers'] = {}
+                scope_filter = self.get_scope_filter('read:servers')
+                for name, spawner in user.spawners.items():
+                    # include 'active' servers, not just ready
+                    # (this includes pending events)
+                    if (spawner.active or include_stopped_servers) and scope_filter(
+                        spawner, kind='server'
+                    ):
+                        servers[name] = self.server_model(spawner)
+
+                if include_stopped_servers:
+                    # add any stopped servers in the db
+                    seen = set(user.spawners.keys())
+                    for name, orm_spawner in user.orm_spawners.items():
+                        if name not in seen and scope_filter(
+                            orm_spawner, kind='server'
+                        ):
+                            servers[name] = self.server_model(orm_spawner, user=user)
         return model
 
     def group_model(self, group):
