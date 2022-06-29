@@ -1,24 +1,52 @@
+# pre-commit is a tool to perform a predefined set of tasks manually and/or
+# automatically before git commits are made.
+#
+# Config reference: https://pre-commit.com/#pre-commit-configyaml---top-level
+#
+# Common tasks
+#
+# - Run on all files:   pre-commit run --all-files
+# - Register git hooks: pre-commit install --install-hooks
+#
 repos:
+  # Autoformat: Python code, syntax patterns are modernized
+  - repo: https://github.com/asottile/pyupgrade
+    rev: v2.32.1
+    hooks:
+      - id: pyupgrade
+        args:
+          - --py36-plus
+
+  # Autoformat: Python code
   - repo: https://github.com/asottile/reorder_python_imports
-    rev: v1.9.0
+    rev: v3.1.0
     hooks:
       - id: reorder-python-imports
+
+  # Autoformat: Python code
   - repo: https://github.com/psf/black
-    rev: 20.8b1
+    rev: 22.3.0
     hooks:
       - id: black
+
+  # Autoformat: markdown, yaml, javascript (see the file .prettierignore)
   - repo: https://github.com/pre-commit/mirrors-prettier
-    rev: v2.2.1
+    rev: v2.6.2
     hooks:
       - id: prettier
-  - repo: https://gitlab.com/pycqa/flake8
-    rev: "3.8.4"
-    hooks:
-      - id: flake8
+
+  # Autoformat and linting, misc. details
   - repo: https://github.com/pre-commit/pre-commit-hooks
-    rev: v3.4.0
+    rev: v4.2.0
     hooks:
       - id: end-of-file-fixer
+        exclude: share/jupyterhub/static/js/admin-react.js
+      - id: requirements-txt-fixer
       - id: check-case-conflict
       - id: check-executables-have-shebangs
-      - id: requirements-txt-fixer
+
+  # Linting: Python code (see the file .flake8)
+  - repo: https://github.com/PyCQA/flake8
+    rev: "4.0.1"
+    hooks:
+      - id: flake8

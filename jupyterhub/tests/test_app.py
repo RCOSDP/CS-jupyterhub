@@ -1,5 +1,6 @@
 """Test the JupyterHub entry point"""
 import binascii
+import json
 import logging
 import os
 import re
@@ -13,6 +14,7 @@ from tempfile import TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
+import traitlets
 from traitlets.config import Config
 
 from .. import orm
@@ -28,6 +30,27 @@ def test_help_all():
     )
     assert '--ip' in out
     assert '--JupyterHub.ip' in out
+
+
+@pytest.mark.skipif(traitlets.version_info < (5,), reason="requires traitlets 5")
+def test_show_config(tmpdir):
+    tmpdir.chdir()
+    p = Popen(
+        [sys.executable, '-m', 'jupyterhub', '--show-config', '--debug'], stdout=PIPE
+    )
+    p.wait(timeout=10)
+    out = p.stdout.read().decode('utf8', 'replace')
+    assert 'log_level' in out
+
+    p = Popen(
+        [sys.executable, '-m', 'jupyterhub', '--show-config-json', '--debug'],
+        stdout=PIPE,
+    )
+    p.wait(timeout=10)
+    out = p.stdout.read().decode('utf8', 'replace')
+    config = json.loads(out)
+    assert 'JupyterHub' in config
+    assert config["JupyterHub"]["log_level"] == 10
 
 
 def test_token_app():
@@ -51,7 +74,7 @@ def test_raise_error_on_missing_specified_config():
     process = Popen(
         [sys.executable, '-m', 'jupyterhub', '--config', 'not-available.py']
     )
-    # wait inpatiently for the process to exit like we want it to
+    # wait impatiently for the process to exit like we want it to
     for i in range(100):
         time.sleep(0.1)
         returncode = process.poll()
@@ -223,15 +246,16 @@ async def test_load_groups(tmpdir, request):
         kwargs['internal_certs_location'] = str(tmpdir)
     hub = MockHub(**kwargs)
     hub.init_db()
+    await hub.init_role_creation()
     await hub.init_users()
     await hub.init_groups()
     db = hub.db
     blue = orm.Group.find(db, name='blue')
     assert blue is not None
-    assert sorted([u.name for u in blue.users]) == sorted(to_load['blue'])
+    assert sorted(u.name for u in blue.users) == sorted(to_load['blue'])
     gold = orm.Group.find(db, name='gold')
     assert gold is not None
-    assert sorted([u.name for u in gold.users]) == sorted(to_load['gold'])
+    assert sorted(u.name for u in gold.users) == sorted(to_load['gold'])
 
 
 async def test_resume_spawners(tmpdir, request):

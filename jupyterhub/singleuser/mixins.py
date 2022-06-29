@@ -16,8 +16,8 @@ import random
 import secrets
 import sys
 import warnings
-from datetime import datetime
 from datetime import timezone
+from importlib import import_module
 from textwrap import dedent
 from urllib.parse import urlparse
 
@@ -50,6 +50,17 @@ from ..utils import exponential_backoff
 from ..utils import isoformat
 from ..utils import make_ssl_context
 from ..utils import url_path_join
+
+
+def _bool_env(key):
+    """Cast an environment variable to bool
+
+    0, empty, or unset is False; All other values are True.
+    """
+    if os.environ.get(key, "") in {"", "0"}:
+        return False
+    else:
+        return True
 
 
 # Authenticate requests with the Hub
@@ -150,7 +161,6 @@ class OAuthCallbackHandlerMixin(HubOAuthCallbackHandler):
 aliases = {
     'user': 'SingleUserNotebookApp.user',
     'group': 'SingleUserNotebookApp.group',
-    'cookie-name': 'HubAuth.cookie_name',
     'hub-prefix': 'SingleUserNotebookApp.hub_prefix',
     'hub-host': 'SingleUserNotebookApp.hub_host',
     'hub-api-url': 'SingleUserNotebookApp.hub_api_url',
@@ -172,6 +182,7 @@ page_template = """
 
 <span>
     <a href='{{hub_control_panel_url}}'
+       id='jupyterhub-control-panel-link'
        class='btn btn-default btn-sm navbar-btn pull-right'
        style='margin-right: 4px; margin-left: 2px;'>
         Control Panel
@@ -279,6 +290,10 @@ class SingleUserNotebookAppMixin(Configurable):
     def _user_changed(self, change):
         self.log.name = change.new
 
+    @default("default_url")
+    def _default_url(self):
+        return os.environ.get("JUPYTERHUB_DEFAULT_URL", "/tree/")
+
     hub_host = Unicode().tag(config=True)
 
     hub_prefix = Unicode('/hub/').tag(config=True)
@@ -361,7 +376,26 @@ class SingleUserNotebookAppMixin(Configurable):
         """,
     ).tag(config=True)
 
-    @validate('notebook_dir')
+    @default("disable_user_config")
+    def _default_disable_user_config(self):
+        return _bool_env("JUPYTERHUB_DISABLE_USER_CONFIG")
+
+    @default("root_dir")
+    def _default_root_dir(self):
+        if os.environ.get("JUPYTERHUB_ROOT_DIR"):
+            proposal = {"value": os.environ["JUPYTERHUB_ROOT_DIR"]}
+            # explicitly call validator, not called on default values
+            return self._notebook_dir_validate(proposal)
+        else:
+            return os.getcwd()
+
+    # notebook_dir is used by the classic notebook server
+    # root_dir is the future in jupyter server
+    @default("notebook_dir")
+    def _default_notebook_dir(self):
+        return self._default_root_dir()
+
+    @validate("notebook_dir", "root_dir")
     def _notebook_dir_validate(self, proposal):
         value = os.path.expanduser(proposal['value'])
         # Strip any trailing slashes
@@ -376,6 +410,13 @@ class SingleUserNotebookAppMixin(Configurable):
         if not os.path.isdir(value):
             raise TraitError("No such notebook dir: %r" % value)
         return value
+
+    @default('log_level')
+    def _log_level_default(self):
+        if _bool_env("JUPYTERHUB_DEBUG"):
+            return logging.DEBUG
+        else:
+            return logging.INFO
 
     @default('log_datefmt')
     def _log_datefmt_default(self):
@@ -452,7 +493,7 @@ class SingleUserNotebookAppMixin(Configurable):
                     i,
                     RETRIES,
                 )
-                await asyncio.sleep(min(2 ** i, 16))
+                await asyncio.sleep(min(2**i, 16))
             else:
                 break
         else:
@@ -520,7 +561,7 @@ class SingleUserNotebookAppMixin(Configurable):
                 url=self.hub_activity_url,
                 method='POST',
                 headers={
-                    "Authorization": "token {}".format(self.hub_auth.api_token),
+                    "Authorization": f"token {self.hub_auth.api_token}",
                     "Content-Type": "application/json",
                 },
                 body=json.dumps(
@@ -566,11 +607,42 @@ class SingleUserNotebookAppMixin(Configurable):
             t = self.hub_activity_interval * (1 + 0.2 * (random.random() - 0.5))
             await asyncio.sleep(t)
 
+    def _log_app_versions(self):
+        """Log application versions at startup
+
+        Logs versions of jupyterhub and singleuser-server base versions (jupyterlab, jupyter_server, notebook)
+        """
+        self.log.info(f"Starting jupyterhub single-user server version {__version__}")
+
+        # don't log these package versions
+        seen = {"jupyterhub", "traitlets", "jupyter_core", "builtins"}
+
+        for cls in self.__class__.mro():
+            module_name = cls.__module__.partition(".")[0]
+            if module_name not in seen:
+                seen.add(module_name)
+                try:
+                    mod = import_module(module_name)
+                    mod_version = getattr(mod, "__version__")
+                except Exception:
+                    mod_version = ""
+                self.log.info(
+                    f"Extending {cls.__module__}.{cls.__name__} from {module_name} {mod_version}"
+                )
+
     def initialize(self, argv=None):
         # disable trash by default
         # this can be re-enabled by config
         self.config.FileContentsManager.delete_to_trash = False
-        return super().initialize(argv)
+        # load default-url env at higher priority than `@default`,
+        # which may have their own _defaults_ which should not override explicit default_url config
+        # via e.g. c.Spawner.default_url. Seen in jupyterlab's SingleUserLabApp.
+        default_url = os.environ.get("JUPYTERHUB_DEFAULT_URL")
+        if default_url:
+            self.config[self.__class__.__name__].default_url = default_url
+        self._log_app_versions()
+        super().initialize(argv)
+        self.patch_templates()
 
     def start(self):
         self.log.info("Starting jupyterhub-singleuser server version %s", __version__)
@@ -615,6 +687,7 @@ class SingleUserNotebookAppMixin(Configurable):
         s['hub_prefix'] = self.hub_prefix
         s['hub_host'] = self.hub_host
         s['hub_auth'] = self.hub_auth
+        s['page_config_hook'] = self.page_config_hook
         csp_report_uri = s['csp_report_uri'] = self.hub_host + url_path_join(
             self.hub_prefix, 'security/csp-report'
         )
@@ -640,7 +713,18 @@ class SingleUserNotebookAppMixin(Configurable):
 
         # apply X-JupyterHub-Version to *all* request handlers (even redirects)
         self.patch_default_headers()
-        self.patch_templates()
+
+    def page_config_hook(self, handler, page_config):
+        """JupyterLab page config hook
+
+        Adds JupyterHub info to page config.
+
+        Places the JupyterHub API token in PageConfig.token.
+
+        Only has effect on jupyterlab_server >=2.9
+        """
+        page_config["token"] = self.hub_auth.get_token(handler) or ""
+        return page_config
 
     def patch_default_headers(self):
         if hasattr(RequestHandler, '_orig_set_default_headers'):
@@ -661,19 +745,42 @@ class SingleUserNotebookAppMixin(Configurable):
         )
         self.jinja_template_vars['hub_host'] = self.hub_host
         self.jinja_template_vars['hub_prefix'] = self.hub_prefix
-        env = self.web_app.settings['jinja2_env']
+        self.jinja_template_vars[
+            'hub_control_panel_url'
+        ] = self.hub_host + url_path_join(self.hub_prefix, 'home')
 
-        env.globals['hub_control_panel_url'] = self.hub_host + url_path_join(
-            self.hub_prefix, 'home'
-        )
+        settings = self.web_app.settings
+        # patch classic notebook jinja env
+        jinja_envs = []
+        if 'jinja2_env' in settings:
+            # default jinja env (should we do this on jupyter-server, or only notebook?)
+            jinja_envs.append(settings['jinja2_env'])
+        if 'notebook_jinja2_env' in settings:
+            # when running with jupyter-server, classic notebook (nbclassic server extension)
+            # gets its own jinja env, which needs the same patch
+            jinja_envs.append(settings['notebook_jinja2_env'])
 
-        # patch jinja env loading to modify page template
+        # patch jinja env loading to get modified template, only for base page.html
         def get_page(name):
             if name == 'page.html':
                 return page_template
 
-        orig_loader = env.loader
-        env.loader = ChoiceLoader([FunctionLoader(get_page), orig_loader])
+        for jinja_env in jinja_envs:
+            jinja_env.loader = ChoiceLoader(
+                [FunctionLoader(get_page), jinja_env.loader]
+            )
+
+    def load_server_extensions(self):
+        # Loading LabApp sets $JUPYTERHUB_API_TOKEN on load, which is incorrect
+        r = super().load_server_extensions()
+        # clear the token in PageConfig at this step
+        # so that cookie auth is used
+        # FIXME: in the future,
+        # it would probably make sense to set page_config.token to the token
+        # from the current request.
+        if 'page_config_data' in self.web_app.settings:
+            self.web_app.settings['page_config_data']['token'] = ''
+        return r
 
 
 def detect_base_package(App):
@@ -771,7 +878,7 @@ def _patch_app_base_handlers(app):
             BaseHandler = import_item("notebook.base.handlers.IPythonHandler")
         else:
             raise ValueError(
-                "{}.base_handler_class must be defined".format(app.__class__.__name__)
+                f"{app.__class__.__name__}.base_handler_class must be defined"
             )
         base_handlers.append(BaseHandler)
 

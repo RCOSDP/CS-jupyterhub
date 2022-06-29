@@ -12,15 +12,18 @@ from tornado.escape import url_escape
 from tornado.httputil import url_concat
 
 from .. import orm
+from .. import roles
+from .. import scopes
 from ..auth import Authenticator
 from ..handlers import BaseHandler
+from ..utils import url_path_join
 from ..utils import url_path_join as ujoin
 from .mocking import FalsyCallableFormSpawner
 from .mocking import FormSpawner
 from .test_api import next_event
-from .utils import add_user
 from .utils import api_request
 from .utils import async_requests
+from .utils import AsyncSession
 from .utils import get_page
 from .utils import public_host
 from .utils import public_url
@@ -45,16 +48,16 @@ async def test_root_auth(app):
     # if spawning was quick, there will be one more entry that's public_url(user)
 
 
-async def test_root_redirect(app):
+async def test_root_redirect(app, user):
     name = 'wash'
     cookies = await app.login_user(name)
-    next_url = ujoin(app.base_url, 'user/other/test.ipynb')
+    next_url = ujoin(app.base_url, f'user/{user.name}/test.ipynb')
     url = '/?' + urlencode({'next': next_url})
     r = await get_page(url, app, cookies=cookies)
     path = urlparse(r.url).path
-    assert path == ujoin(app.base_url, 'hub/user/%s/test.ipynb' % name)
-    # serve "server not running" page, which has status 503
-    assert r.status_code == 503
+    assert path == ujoin(app.base_url, f'hub/user/{user.name}/test.ipynb')
+    # preserves choice to requested user, which 404s as unavailable without access
+    assert r.status_code == 404
 
 
 async def test_root_default_url_noauth(app):
@@ -125,10 +128,19 @@ async def test_admin_sort(app, sort):
     assert r.status_code == 200
 
 
-async def test_spawn_redirect(app):
+@pytest.mark.parametrize("last_failed", [True, False])
+async def test_spawn_redirect(app, last_failed):
     name = 'wash'
     cookies = await app.login_user(name)
     u = app.users[orm.User.find(app.db, name)]
+
+    if last_failed:
+        # mock a failed spawn
+        last_spawner = u.spawners['']
+        last_spawner._spawn_future = asyncio.Future()
+        last_spawner._spawn_future.set_exception(RuntimeError("I failed!"))
+    else:
+        last_spawner = None
 
     status = await u.spawner.poll()
     assert status is not None
@@ -138,6 +150,10 @@ async def test_spawn_redirect(app):
     r.raise_for_status()
     print(urlparse(r.url))
     path = urlparse(r.url).path
+
+    # ensure we got a new spawner
+    assert u.spawners[''] is not last_spawner
+
     # make sure we visited hub/spawn-pending after spawn
     # if spawn was really quick, we might get redirected all the way to the running server,
     # so check history instead of r.url
@@ -169,7 +185,7 @@ async def test_spawn_redirect(app):
     r = await get_page('user/' + name, app, hub=False, cookies=cookies)
     path = urlparse(r.url).path
     assert path == ujoin(app.base_url, 'hub/user/%s/' % name)
-    assert r.status_code == 503
+    assert r.status_code == 424
 
 
 async def test_spawn_handler_access(app):
@@ -200,13 +216,34 @@ async def test_spawn_handler_access(app):
     r.raise_for_status()
 
 
-async def test_spawn_admin_access(app, admin_access):
-    """GET /user/:name as admin with admin-access spawns user's server"""
-    cookies = await app.login_user('admin')
-    name = 'mariel'
-    user = add_user(app.db, app=app, name=name)
-    app.db.commit()
+@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+async def test_spawn_other_user(
+    app, user, username, group, create_temp_role, has_access
+):
+    """GET /user/:name as another user with access to spawns user's server"""
+    cookies = await app.login_user(username)
+    requester = app.users[username]
+    name = user.name
+
+    if has_access:
+        if has_access == "group":
+            group.users.append(user)
+            app.db.commit()
+            scopes = [
+                f"access:servers!group={group.name}",
+                f"servers!group={group.name}",
+            ]
+        elif has_access == "all":
+            scopes = ["access:servers", "servers"]
+        elif has_access == "user":
+            scopes = [f"access:servers!user={user.name}", f"servers!user={user.name}"]
+        role = create_temp_role(scopes)
+        roles.grant_role(app.db, requester, role)
+
     r = await get_page('spawn/' + name, app, cookies=cookies)
+    if not has_access:
+        assert r.status_code == 404
+        return
     r.raise_for_status()
 
     while '/spawn-pending/' in r.url:
@@ -215,7 +252,7 @@ async def test_spawn_admin_access(app, admin_access):
         r.raise_for_status()
 
     assert (r.url.split('?')[0] + '/').startswith(public_url(app, user))
-    r = await get_page('user/{}/env'.format(name), app, hub=False, cookies=cookies)
+    r = await get_page(f'user/{name}/env', app, hub=False, cookies=cookies)
 
     r.raise_for_status()
     env = r.json()
@@ -234,6 +271,25 @@ async def test_spawn_page(app):
         assert FormSpawner.options_form in r.text
 
 
+async def test_spawn_page_after_failed(app, user):
+    cookies = await app.login_user(user.name)
+
+    # mock a failed spawn
+    last_spawner = user.spawners['']
+    last_spawner._spawn_future = asyncio.Future()
+    last_spawner._spawn_future.set_exception(RuntimeError("I failed!"))
+
+    with mock.patch.dict(app.users.settings, {'spawner_class': FormSpawner}):
+        r = await get_page('spawn', app, cookies=cookies)
+        spawner = user.spawners['']
+        # make sure we didn't reuse last spawner
+        assert isinstance(spawner, FormSpawner)
+        assert spawner is not last_spawner
+        assert r.url.endswith('/spawn')
+        spawner = user.spawners['']
+        assert FormSpawner.options_form in r.text
+
+
 async def test_spawn_page_falsy_callable(app):
     with mock.patch.dict(
         app.users.settings, {'spawner_class': FalsyCallableFormSpawner}
@@ -245,14 +301,36 @@ async def test_spawn_page_falsy_callable(app):
     assert history[1] == ujoin(public_url(app), "hub/spawn-pending/erik")
 
 
-async def test_spawn_page_admin(app, admin_access):
+@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+async def test_spawn_page_access(
+    app, has_access, group, username, user, create_temp_role
+):
+    cookies = await app.login_user(username)
+    requester = app.users[username]
+    if has_access:
+        if has_access == "group":
+            group.users.append(user)
+            app.db.commit()
+            scopes = [
+                f"access:servers!group={group.name}",
+                f"servers!group={group.name}",
+            ]
+        elif has_access == "all":
+            scopes = ["access:servers", "servers"]
+        elif has_access == "user":
+            scopes = [f"access:servers!user={user.name}", f"servers!user={user.name}"]
+        role = create_temp_role(scopes)
+        roles.grant_role(app.db, requester, role)
+
     with mock.patch.dict(app.users.settings, {'spawner_class': FormSpawner}):
-        cookies = await app.login_user('admin')
-        u = add_user(app.db, app=app, name='melanie')
-        r = await get_page('spawn/' + u.name, app, cookies=cookies)
-        assert r.url.endswith('/spawn/' + u.name)
+        r = await get_page('spawn/' + user.name, app, cookies=cookies)
+        if not has_access:
+            assert r.status_code == 404
+            return
+        assert r.status_code == 200
+        assert r.url.endswith('/spawn/' + user.name)
         assert FormSpawner.options_form in r.text
-        assert "Spawning server for {}".format(u.name) in r.text
+        assert f"Spawning server for {user.name}" in r.text
 
 
 async def test_spawn_with_query_arguments(app):
@@ -319,18 +397,39 @@ async def test_spawn_form(app):
         }
 
 
-async def test_spawn_form_admin_access(app, admin_access):
+@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+async def test_spawn_form_other_user(
+    app, username, user, group, create_temp_role, has_access
+):
+    cookies = await app.login_user(username)
+    requester = app.users[username]
+    if has_access:
+        if has_access == "group":
+            group.users.append(user)
+            app.db.commit()
+            scopes = [
+                f"access:servers!group={group.name}",
+                f"servers!group={group.name}",
+            ]
+        elif has_access == "all":
+            scopes = ["access:servers", "servers"]
+        elif has_access == "user":
+            scopes = [f"access:servers!user={user.name}", f"servers!user={user.name}"]
+        role = create_temp_role(scopes)
+        roles.grant_role(app.db, requester, role)
+
     with mock.patch.dict(app.tornado_settings, {'spawner_class': FormSpawner}):
         base_url = ujoin(public_host(app), app.hub.base_url)
-        cookies = await app.login_user('admin')
-        u = add_user(app.db, app=app, name='martha')
-        next_url = ujoin(app.base_url, 'user', u.name, 'tree')
+        next_url = ujoin(app.base_url, 'user', user.name, 'tree')
 
         r = await async_requests.post(
-            url_concat(ujoin(base_url, 'spawn', u.name), {'next': next_url}),
+            url_concat(ujoin(base_url, 'spawn', user.name), {'next': next_url}),
             cookies=cookies,
             data={'bounds': ['-3', '3'], 'energy': '938MeV'},
         )
+        if not has_access:
+            assert r.status_code == 404
+            return
         r.raise_for_status()
 
         while '/spawn-pending/' in r.url:
@@ -339,8 +438,8 @@ async def test_spawn_form_admin_access(app, admin_access):
             r.raise_for_status()
 
         assert r.history
-        assert r.url.startswith(public_url(app, u))
-        assert u.spawner.user_options == {
+        assert r.url.startswith(public_url(app, user))
+        assert user.spawner.user_options == {
             'energy': '938MeV',
             'bounds': [-3, 3],
             'notspecified': 5,
@@ -495,31 +594,54 @@ async def test_user_redirect_hook(app, username):
     assert redirected_url.path == ujoin(app.base_url, 'user', username, 'terminals/1')
 
 
-async def test_user_redirect_deprecated(app, username):
-    """redirecting from /user/someonelse/ URLs (deprecated)"""
+@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+async def test_other_user_url(app, username, user, group, create_temp_role, has_access):
+    """Test accessing /user/someonelse/ URLs when the server is not running
+
+    Used to redirect to your own server,
+    which produced inconsistent behavior depending on whether the server was running.
+    """
     name = username
     cookies = await app.login_user(name)
+    other_user = user
+    requester = app.users[name]
+    other_user_url = f"/user/{other_user.name}"
+    if has_access:
+        if has_access == "group":
+            group.users.append(other_user)
+            app.db.commit()
+            scopes = [f"access:servers!group={group.name}"]
+        elif has_access == "all":
+            scopes = ["access:servers"]
+        elif has_access == "user":
+            scopes = [f"access:servers!user={other_user.name}"]
+        role = create_temp_role(scopes)
+        roles.grant_role(app.db, requester, role)
+        status = 424
+    else:
+        # 404 - access denied without revealing if the user exists
+        status = 404
 
-    r = await get_page('/user/baduser', app, cookies=cookies, hub=False)
+    r = await get_page(other_user_url, app, cookies=cookies, hub=False)
     print(urlparse(r.url))
     path = urlparse(r.url).path
-    assert path == ujoin(app.base_url, 'hub/user/%s/' % name)
-    assert r.status_code == 503
+    assert path == ujoin(app.base_url, f'hub/user/{other_user.name}/')
+    assert r.status_code == status
 
-    r = await get_page('/user/baduser/test.ipynb', app, cookies=cookies, hub=False)
+    r = await get_page(f'{other_user_url}/test.ipynb', app, cookies=cookies, hub=False)
     print(urlparse(r.url))
     path = urlparse(r.url).path
-    assert path == ujoin(app.base_url, 'hub/user/%s/test.ipynb' % name)
-    assert r.status_code == 503
+    assert path == ujoin(app.base_url, f'hub/user/{other_user.name}/test.ipynb')
+    assert r.status_code == status
 
-    r = await get_page('/user/baduser/test.ipynb', app, hub=False)
+    r = await get_page(f'{other_user_url}/test.ipynb', app, hub=False)
     r.raise_for_status()
     print(urlparse(r.url))
     path = urlparse(r.url).path
     assert path == ujoin(app.base_url, '/hub/login')
     query = urlparse(r.url).query
     assert query == urlencode(
-        {'next': ujoin(app.base_url, '/hub/user/baduser/test.ipynb')}
+        {'next': ujoin(app.base_url, f'/hub/user/{other_user.name}/test.ipynb')}
     )
 
 
@@ -575,6 +697,41 @@ async def test_login_page(app, url, params, redirected_url, form_action):
     assert action.endswith(form_action)
 
 
+@pytest.mark.parametrize(
+    "url, token_in",
+    [
+        ("/home", "url"),
+        ("/home", "header"),
+        ("/login", "url"),
+        ("/login", "header"),
+    ],
+)
+async def test_page_with_token(app, user, url, token_in):
+    cookies = await app.login_user(user.name)
+    token = user.new_api_token()
+    if token_in == "url":
+        url = url_concat(url, {"token": token})
+        headers = None
+    elif token_in == "header":
+        headers = {
+            "Authorization": f"token {token}",
+        }
+
+    # request a page with ?token= in URL shouldn't be allowed
+    r = await get_page(
+        url,
+        app,
+        headers=headers,
+        allow_redirects=False,
+    )
+    if "/hub/login" in r.url:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 302
+        assert r.headers["location"].partition("?")[0].endswith("/hub/login")
+    assert not r.cookies
+
+
 async def test_login_fail(app):
     name = 'wash'
     base_url = public_url(app)
@@ -614,6 +771,10 @@ async def test_login_strip(app):
         (False, '/user/other', '/hub/user/other', None),
         (False, '/absolute', '/absolute', None),
         (False, '/has?query#andhash', '/has?query#andhash', None),
+        # :// in query string or fragment
+        (False, '/has?repo=https/host.git', '/has?repo=https/host.git', None),
+        (False, '/has?repo=https://host.git', '/has?repo=https://host.git', None),
+        (False, '/has#repo=https://host.git', '/has#repo=https://host.git', None),
         # next_url outside is not allowed
         (False, 'relative/path', '', None),
         (False, 'https://other.domain', '', None),
@@ -653,7 +814,9 @@ async def test_login_redirect(app, running, next_url, location, params):
     if params:
         url = url_concat(url, params)
     if next_url:
-        if '//' not in next_url and next_url.startswith('/'):
+        if next_url.startswith('/') and not (
+            next_url.startswith("//") or urlparse(next_url).netloc
+        ):
             next_url = ujoin(app.base_url, next_url, '')
         url = url_concat(url, dict(next=next_url))
 
@@ -869,8 +1032,9 @@ async def test_oauth_token_page(app):
     user = app.users[orm.User.find(app.db, name)]
     client = orm.OAuthClient(identifier='token')
     app.db.add(client)
-    oauth_token = orm.OAuthAccessToken(
-        client=client, user=user, grant_type=orm.GrantType.authorization_code
+    oauth_token = orm.APIToken(
+        oauth_client=client,
+        user=user,
     )
     app.db.add(oauth_token)
     app.db.commit()
@@ -945,6 +1109,62 @@ async def test_bad_oauth_get(app, params):
     assert r.status_code == 400
 
 
+@pytest.mark.parametrize(
+    "scopes, has_access",
+    [
+        (["users"], False),
+        (["admin:users"], False),
+        (["users", "admin:users", "admin:servers"], True),
+    ],
+)
+async def test_admin_page_access(app, scopes, has_access, create_user_with_scopes):
+    user = create_user_with_scopes(*scopes)
+    cookies = await app.login_user(user.name)
+    r = await get_page("/admin", app, cookies=cookies)
+    if has_access:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 403
+
+
+async def test_oauth_page_scope_appearance(
+    app, mockservice_url, create_user_with_scopes, create_temp_role
+):
+    service_role = create_temp_role(
+        [
+            'self',
+            'read:users!user=gawain',
+            'read:tokens',
+            'read:groups!group=mythos',
+        ]
+    )
+    service = mockservice_url
+    user = create_user_with_scopes("access:services")
+    oauth_client = (
+        app.db.query(orm.OAuthClient)
+        .filter_by(identifier=service.oauth_client_id)
+        .one()
+    )
+    oauth_client.allowed_roles = [service_role]
+    app.db.commit()
+
+    s = AsyncSession()
+    s.cookies = await app.login_user(user.name)
+    url = url_path_join(public_url(app, service) + 'owhoami/?arg=x')
+    r = await s.get(url)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    scopes_block = soup.find('form')
+    for scope in service_role.scopes:
+        base_scope, _, filter_ = scope.partition('!')
+        scope_def = scopes.scope_definitions[base_scope]
+        assert scope_def['description'] in scopes_block.text
+        if filter_:
+            kind, _, name = filter_.partition('=')
+            assert kind in scopes_block.text
+            assert name in scopes_block.text
+
+
 async def test_token_page(app):
     name = "cake"
     cookies = await app.login_user(name)
@@ -1001,24 +1221,18 @@ async def test_token_page(app):
 async def test_server_not_running_api_request(app):
     cookies = await app.login_user("bees")
     r = await get_page("user/bees/api/status", app, hub=False, cookies=cookies)
-    assert r.status_code == 503
+    assert r.status_code == 424
     assert r.headers["content-type"] == "application/json"
     message = r.json()['message']
     assert ujoin(app.base_url, "hub/spawn/bees") in message
     assert " /user/bees" in message
 
 
-async def test_metrics_no_auth(app):
-    r = await get_page("metrics", app)
-    assert r.status_code == 403
-
-
-async def test_metrics_auth(app):
-    cookies = await app.login_user('river')
-    metrics_url = ujoin(public_host(app), app.hub.base_url, 'metrics')
-    r = await get_page("metrics", app, cookies=cookies)
-    assert r.status_code == 200
-    assert r.url == metrics_url
+async def test_server_not_running_api_request_legacy_status(app):
+    app.use_legacy_stopped_server_status_code = True
+    cookies = await app.login_user("bees")
+    r = await get_page("user/bees/api/status", app, hub=False, cookies=cookies)
+    assert r.status_code == 503
 
 
 async def test_health_check_request(app):
@@ -1027,7 +1241,7 @@ async def test_health_check_request(app):
 
 
 async def test_pre_spawn_start_exc_no_form(app):
-    exc = "pre_spawn_start error"
+    exc = "Unhandled error starting server"
 
     # throw exception from pre_spawn_start
     async def mock_pre_spawn_start(user, spawner):
