@@ -48,6 +48,9 @@ class RootHandler(BaseHandler):
             url = self.get_next_url(user)
         else:
             url = url_concat(self.settings["login_url"], dict(next=self.request.uri))
+            return_on_error = self.get_argument('return_on_error', None)
+            if return_on_error:
+                url = url_concat(url, dict(return_on_error=return_on_error))
         self.redirect(url)
 
 

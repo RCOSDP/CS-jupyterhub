@@ -187,6 +187,19 @@
 {% endcall %}
 
 {% block script %}
+  <script>
+    function showReturnOnError() {
+      const returnOnError = (new URLSearchParams(window.location.search)).get('return_on_error');
+      if (!returnOnError) {
+        return;
+      }
+      $('#return-on-error a').attr('href', returnOnError);
+      $('#return-on-error').show();
+    }
+  </script>
+  <div id="return-on-error" style="display: none;">
+    <a href="#">Back to the previous page</a>
+  </div>
 {% endblock %}
 
 </body>
