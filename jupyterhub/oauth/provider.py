@@ -557,6 +557,9 @@ class JupyterHubRequestValidator(RequestValidator):
         # explicitly allow 'identify', which was the only allowed scope previously
         # requesting 'identify' gets no actual permissions other than self-identification
         client_allowed_roles.setdefault('identify', None)
+
+        # Added for backward compatibility
+        client_allowed_roles.setdefault('identity', None)
         roles = []
         requested_roles = set(scopes)
         disallowed_roles = requested_roles.difference(client_allowed_roles)
