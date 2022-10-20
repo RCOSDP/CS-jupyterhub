@@ -231,6 +231,7 @@ def test_singleuser_app_class(JUPYTERHUB_SINGLEUSER_APP):
 
 
 async def test_nbclassic_control_panel(app, user):
+    import logging
     # use StubSingleUserSpawner to launch a single-user app in a thread
     app.spawner_class = StubSingleUserSpawner
     app.tornado_settings['spawner_class'] = StubSingleUserSpawner
@@ -244,6 +245,8 @@ async def test_nbclassic_control_panel(app, user):
     r.raise_for_status()
     assert urlparse(r.url).path == urlparse(next_url).path
     page = BeautifulSoup(r.text, "html.parser")
+    # print(page, file=sys.stderr)
+    logging.getLogger().error("page: %s", page)
     link = page.find("a", id="jupyterhub-control-panel-link")
     assert link, f"Missing jupyterhub-control-panel-link in {page}"
     assert link["href"] == url_path_join(app.base_url, "hub/home")
