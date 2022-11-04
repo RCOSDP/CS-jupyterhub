@@ -73,16 +73,6 @@ jobs:
             oldest_dependencies: oldest_dependencies
             nbclassic: nbclassic
           - python: "3.6"
-            subdomain: subdomain
-          - python: "3.6"
-            db: mysql
-          - python: "3.6"
-            ssl: ssl
-          - python: "3.6"
-            db: postgres
-          - python: "3.6"
-            nbclassic: nbclassic
-          - python: "3.6"
             main_dependencies: main_dependencies
           - python: "3.7"
             db: mysql

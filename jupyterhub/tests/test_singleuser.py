@@ -232,6 +232,7 @@ def test_singleuser_app_class(JUPYTERHUB_SINGLEUSER_APP):
 
 async def test_nbclassic_control_panel(app, user):
     import logging
+    os.environ["JUPYTERHUB_SINGLEUSER_APP"] = 'notebook.notebookapp.NotebookApp'
     # use StubSingleUserSpawner to launch a single-user app in a thread
     app.spawner_class = StubSingleUserSpawner
     app.tornado_settings['spawner_class'] = StubSingleUserSpawner
