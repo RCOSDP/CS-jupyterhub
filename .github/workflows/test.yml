@@ -73,7 +73,7 @@ jobs:
             oldest_dependencies: oldest_dependencies
             nbclassic: nbclassic
           - python: "3.6"
-            main_dependencies: main_dependencies
+            subdomain: subdomain
           - python: "3.7"
             db: mysql
           - python: "3.7"
@@ -84,8 +84,6 @@ jobs:
             nbclassic: nbclassic
           - python: "3.9"
             main_dependencies: main_dependencies
-          - python: "3.9"
-            subdomain: subdomain
 
     steps:
       # NOTE: In GitHub workflows, environment variables are set by writing

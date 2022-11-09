@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 
 import jupyterhub
 from .. import orm
+
+from ..singleuser import SingleUserNotebookApp
 from ..utils import url_path_join
 from .mocking import public_url
 from .mocking import StubSingleUserSpawner
@@ -229,10 +231,9 @@ def test_singleuser_app_class(JUPYTERHUB_SINGLEUSER_APP):
         assert '--ServerApp.' in out
         assert '--NotebookApp.' not in out
 
-
+@pytest.mark.skipif('jupyter-server' == SingleUserNotebookApp.name,
+                    reason="This test is only for classic NotebookApp")
 async def test_nbclassic_control_panel(app, user):
-    import logging
-    os.environ["JUPYTERHUB_SINGLEUSER_APP"] = 'notebook.notebookapp.NotebookApp'
     # use StubSingleUserSpawner to launch a single-user app in a thread
     app.spawner_class = StubSingleUserSpawner
     app.tornado_settings['spawner_class'] = StubSingleUserSpawner
@@ -246,8 +247,6 @@ async def test_nbclassic_control_panel(app, user):
     r.raise_for_status()
     assert urlparse(r.url).path == urlparse(next_url).path
     page = BeautifulSoup(r.text, "html.parser")
-    # print(page, file=sys.stderr)
-    logging.getLogger().error("page: %s", page)
     link = page.find("a", id="jupyterhub-control-panel-link")
     assert link, f"Missing jupyterhub-control-panel-link in {page}"
     assert link["href"] == url_path_join(app.base_url, "hub/home")
