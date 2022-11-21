@@ -13,6 +13,8 @@ from bs4 import BeautifulSoup
 
 import jupyterhub
 from .. import orm
+
+from ..singleuser import SingleUserNotebookApp
 from ..utils import url_path_join
 from .mocking import public_url
 from .mocking import StubSingleUserSpawner
@@ -229,7 +231,8 @@ def test_singleuser_app_class(JUPYTERHUB_SINGLEUSER_APP):
         assert '--ServerApp.' in out
         assert '--NotebookApp.' not in out
 
-
+@pytest.mark.skipif('jupyter-server' == SingleUserNotebookApp.name,
+                    reason="This test is only for classic NotebookApp")
 async def test_nbclassic_control_panel(app, user):
     # use StubSingleUserSpawner to launch a single-user app in a thread
     app.spawner_class = StubSingleUserSpawner

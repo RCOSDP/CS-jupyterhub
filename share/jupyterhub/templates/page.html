@@ -187,6 +187,35 @@
 {% endcall %}
 
 {% block script %}
+  <script>
+    function getReturnOnErrorURL(searchParams) {
+      const returnOnError = searchParams.get('return_on_error');
+      if (returnOnError) {
+        return returnOnError;
+      }
+      const nextURLString = searchParams.get('next');
+      if (!nextURLString) {
+        return null;
+      }
+      const nextURL = new URL(nextURLString, window.location.href);
+      if (!nextURL.search) {
+        return null;
+      }
+      return getReturnOnErrorURL(nextURL.searchParams);
+    }
+
+    function showReturnOnError() {
+      const returnOnError = getReturnOnErrorURL(new URLSearchParams(window.location.search));
+      if (!returnOnError) {
+        return;
+      }
+      $('#return-on-error a').attr('href', returnOnError);
+      $('#return-on-error').show();
+    }
+  </script>
+  <div id="return-on-error" style="display: none;">
+    <a href="#">Back to the previous page</a>
+  </div>
 {% endblock %}
 
 </body>

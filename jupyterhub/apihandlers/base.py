@@ -314,25 +314,29 @@ class APIHandler(BaseHandler):
             if '' in user.spawners and 'pending' in allowed_keys:
                 model['pending'] = user.spawners[''].pending
 
-            if 'servers' in allowed_keys:
-                servers = model['servers'] = {}
-                scope_filter = self.get_scope_filter('read:servers')
-                for name, spawner in user.spawners.items():
-                    # include 'active' servers, not just ready
-                    # (this includes pending events)
-                    if (spawner.active or include_stopped_servers) and scope_filter(
-                        spawner, kind='server'
-                    ):
-                        servers[name] = self.server_model(spawner)
+            servers = {}
+            scope_filter = self.get_scope_filter('read:servers')
+            for name, spawner in user.spawners.items():
+                # include 'active' servers, not just ready
+                # (this includes pending events)
+                if (spawner.active or include_stopped_servers) and scope_filter(
+                    spawner, kind='server'
+                ):
+                    servers[name] = self.server_model(spawner)
 
-                if include_stopped_servers:
-                    # add any stopped servers in the db
-                    seen = set(user.spawners.keys())
-                    for name, orm_spawner in user.orm_spawners.items():
-                        if name not in seen and scope_filter(
-                            orm_spawner, kind='server'
-                        ):
-                            servers[name] = self.server_model(orm_spawner, user=user)
+            if include_stopped_servers:
+                # add any stopped servers in the db
+                seen = set(user.spawners.keys())
+                for name, orm_spawner in user.orm_spawners.items():
+                    if name not in seen and scope_filter(
+                        orm_spawner, kind='server'
+                    ):
+                        servers[name] = self.server_model(orm_spawner, user=user)
+            if "servers" in allowed_keys or servers:
+                # omit servers if no access
+                # leave present and empty
+                # if request has access to read servers in general
+                model["servers"] = servers
         return model
 
     def group_model(self, group):
