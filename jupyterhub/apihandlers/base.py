@@ -341,17 +341,17 @@ class APIHandler(BaseHandler):
 
             if include_stopped_servers:
                 # add any stopped servers in the db
-                seen = set(servers.keys())
+                seen = set(user.spawners.keys())
                 for name, orm_spawner in user.orm_spawners.items():
-                    if name not in seen and scope_filter(orm_spawner, kind='server'):
+                    if name not in seen and scope_filter(
+                        orm_spawner, kind='server'
+                    ):
                         servers[name] = self.server_model(orm_spawner, user=user)
-
             if "servers" in allowed_keys or servers:
                 # omit servers if no access
                 # leave present and empty
                 # if request has access to read servers in general
                 model["servers"] = servers
-
         return model
 
     def group_model(self, group):
