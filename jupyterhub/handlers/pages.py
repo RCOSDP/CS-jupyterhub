@@ -14,11 +14,9 @@ from tornado import web
 from tornado.httputil import url_concat
 
 from .. import __version__
-from ..metrics import SERVER_POLL_DURATION_SECONDS
-from ..metrics import ServerPollStatus
+from ..metrics import SERVER_POLL_DURATION_SECONDS, ServerPollStatus
 from ..scopes import needs_scope
-from ..utils import maybe_future
-from ..utils import url_path_join
+from ..utils import maybe_future, url_escape_path, url_path_join
 from .base import BaseHandler
 
 
@@ -79,7 +77,7 @@ class HomeHandler(BaseHandler):
             user=user,
             url=url,
             allow_named_servers=self.allow_named_servers,
-            named_server_limit_per_user=self.named_server_limit_per_user,
+            named_server_limit_per_user=await self.get_current_user_named_server_limit(),
             url_path_join=url_path_join,
             # can't use user.spawners because the stop method of User pops named servers from user.spawners when they're stopped
             spawners=user.orm_user._orm_spawners,
@@ -136,17 +134,19 @@ class SpawnHandler(BaseHandler):
         if server_name:
             if not self.allow_named_servers:
                 raise web.HTTPError(400, "Named servers are not enabled.")
-            if (
-                self.named_server_limit_per_user > 0
-                and server_name not in user.orm_spawners
-            ):
+
+            named_server_limit_per_user = (
+                await self.get_current_user_named_server_limit()
+            )
+
+            if named_server_limit_per_user > 0 and server_name not in user.orm_spawners:
                 named_spawners = list(user.all_spawners(include_default=False))
-                if self.named_server_limit_per_user <= len(named_spawners):
+                if named_server_limit_per_user <= len(named_spawners):
                     raise web.HTTPError(
                         400,
                         "User {} already has the maximum of {} named servers."
                         "  One must be deleted before a new server can be created".format(
-                            user.name, self.named_server_limit_per_user
+                            user.name, named_server_limit_per_user
                         ),
                     )
 
@@ -275,15 +275,6 @@ class SpawnHandler(BaseHandler):
             )
             self.finish(form)
             return
-        if current_user is user:
-            self.set_login_cookie(user)
-        next_url = self.get_next_url(
-            user,
-            default=url_path_join(
-                self.hub.base_url, "spawn-pending", user.escaped_name, server_name
-            ),
-        )
-        self.redirect(next_url)
 
     def _get_pending_url(self, user, server_name):
         # resolve `?next=...`, falling back on the spawn-pending url
@@ -291,7 +282,10 @@ class SpawnHandler(BaseHandler):
         # which may get handled by the default server if they aren't ready yet
 
         pending_url = url_path_join(
-            self.hub.base_url, "spawn-pending", user.escaped_name, server_name
+            self.hub.base_url,
+            "spawn-pending",
+            user.escaped_name,
+            url_escape_path(server_name),
         )
 
         pending_url = self.append_query_parameters(pending_url, exclude=['next'])
@@ -360,6 +354,7 @@ class SpawnPendingHandler(BaseHandler):
         if server_name and server_name not in user.spawners:
             raise web.HTTPError(404, f"{user.name} has no such server {server_name}")
 
+        escaped_server_name = url_escape_path(server_name)
         spawner = user.spawners[server_name]
 
         if spawner.ready:
@@ -382,7 +377,7 @@ class SpawnPendingHandler(BaseHandler):
             exc = spawner._spawn_future.exception()
             self.log.error("Previous spawn for %s failed: %s", spawner._log_name, exc)
             spawn_url = url_path_join(
-                self.hub.base_url, "spawn", user.escaped_name, server_name
+                self.hub.base_url, "spawn", user.escaped_name, escaped_server_name
             )
             self.set_status(500)
             html = await self.render_template(
@@ -435,7 +430,7 @@ class SpawnPendingHandler(BaseHandler):
         # serving the expected page
         if status is not None:
             spawn_url = url_path_join(
-                self.hub.base_url, "spawn", user.escaped_name, server_name
+                self.hub.base_url, "spawn", user.escaped_name, escaped_server_name
             )
             html = await self.render_template(
                 "not_running.html",
@@ -490,8 +485,7 @@ class AdminHandler(BaseHandler):
     @web.authenticated
     # stacked decorators: all scopes must be present
     # note: keep in sync with admin link condition in page.html
-    @needs_scope('admin:users')
-    @needs_scope('admin:servers')
+    @needs_scope('admin-ui')
     async def get(self):
         auth_state = await self.current_user.get_auth_state()
         limit = self.get_argument('limit', None)
@@ -499,9 +493,9 @@ class AdminHandler(BaseHandler):
             'admin.html',
             current_user=self.current_user,
             auth_state=auth_state,
-            admin_access=self.settings.get('admin_access', False),
+            admin_access=True,
             allow_named_servers=self.allow_named_servers,
-            named_server_limit_per_user=self.named_server_limit_per_user,
+            named_server_limit_per_user=await self.get_current_user_named_server_limit(),
             server_version=f'{__version__} {self.version_hash}',
             api_page_limit=limit if limit else self.settings["api_page_default_limit"],
             base_url=self.settings["base_url"],

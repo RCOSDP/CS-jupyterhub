@@ -7,15 +7,12 @@ authentication can expire in a number of ways:
 - doesn't need refresh
 - needs refresh and cannot be refreshed without new login
 """
-from contextlib import contextmanager
 from unittest import mock
-from urllib.parse import parse_qs
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
-from .utils import api_request
-from .utils import get_page
+from .utils import api_request, get_page
 
 
 async def refresh_expired(authenticator, user):

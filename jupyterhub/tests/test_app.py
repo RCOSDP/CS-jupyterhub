@@ -1,4 +1,5 @@
 """Test the JupyterHub entry point"""
+import asyncio
 import binascii
 import json
 import logging
@@ -6,11 +7,8 @@ import os
 import re
 import sys
 import time
-from subprocess import check_output
-from subprocess import PIPE
-from subprocess import Popen
-from tempfile import NamedTemporaryFile
-from tempfile import TemporaryDirectory
+from subprocess import PIPE, Popen, check_output
+from tempfile import NamedTemporaryFile, TemporaryDirectory
 from unittest.mock import patch
 
 import pytest
@@ -18,8 +16,7 @@ import traitlets
 from traitlets.config import Config
 
 from .. import orm
-from ..app import COOKIE_SECRET_BYTES
-from ..app import JupyterHub
+from ..app import COOKIE_SECRET_BYTES, JupyterHub
 from .mocking import MockHub
 from .test_api import add_user
 
@@ -392,3 +389,33 @@ def test_hub_routespec(
         assert "may not receive" in caplog.text
     else:
         assert "may not receive" not in caplog.text
+
+
+@pytest.mark.parametrize(
+    "argv, sys_argv",
+    [
+        (None, ["jupyterhub", "--debug", "--port=1234"]),
+        (["--log-level=INFO"], ["jupyterhub"]),
+    ],
+)
+def test_launch_instance(request, argv, sys_argv):
+    class DummyHub(JupyterHub):
+        def launch_instance_async(self, argv):
+            # short-circuit initialize
+            # by indicating we are going to generate config in start
+            self.generate_config = True
+            return super().launch_instance_async(argv)
+
+        async def start(self):
+            asyncio.get_running_loop().stop()
+
+    DummyHub.clear_instance()
+    request.addfinalizer(DummyHub.clear_instance)
+
+    with patch.object(sys, "argv", sys_argv):
+        DummyHub.launch_instance(argv)
+    hub = DummyHub.instance()
+    if argv is None:
+        assert hub.argv == sys_argv[1:]
+    else:
+        assert hub.argv == argv

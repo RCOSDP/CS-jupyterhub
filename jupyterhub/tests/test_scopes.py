@@ -7,18 +7,22 @@ from pytest import mark
 from tornado import web
 from tornado.httputil import HTTPServerRequest
 
-from .. import orm
-from .. import roles
+from .. import orm, roles, scopes
+from .._memoize import FrozenDict
 from ..handlers import BaseHandler
-from ..scopes import _check_scope_access
-from ..scopes import _intersect_expanded_scopes
-from ..scopes import get_scopes_for
-from ..scopes import needs_scope
-from ..scopes import parse_scopes
-from ..scopes import Scope
-from .utils import add_user
-from .utils import api_request
-from .utils import auth_header
+from ..scopes import (
+    Scope,
+    _check_scope_access,
+    _expand_self_scope,
+    _intersect_expanded_scopes,
+    _resolve_requested_scopes,
+    expand_scopes,
+    get_scopes_for,
+    identify_scopes,
+    needs_scope,
+    parse_scopes,
+)
+from .utils import add_user, api_request, auth_header
 
 
 def get_handler_with_scopes(scopes):
@@ -36,6 +40,7 @@ def test_scope_constructor():
         f'read:users!user={user2}',
     ]
     parsed_scopes = parse_scopes(scope_list)
+    assert isinstance(parsed_scopes, FrozenDict)
 
     assert 'read:users' in parsed_scopes
     assert parsed_scopes['users']
@@ -277,19 +282,19 @@ async def test_refuse_exceeding_token_permissions(
 ):
     user = create_user_with_scopes('self')
     user.new_api_token()
-    create_temp_role(['admin:users'], 'exceeding_role')
     with pytest.raises(ValueError):
-        roles.update_roles(app.db, entity=user.api_tokens[0], roles=['exceeding_role'])
+        user.api_tokens[0].update_scopes(["admin:users"])
 
 
 async def test_exceeding_user_permissions(
-    app, create_user_with_scopes, create_temp_role
+    app,
+    create_user_with_scopes,
 ):
     user = create_user_with_scopes('list:users', 'read:users:groups')
     api_token = user.new_api_token()
     orm_api_token = orm.APIToken.find(app.db, token=api_token)
-    create_temp_role(['list:users', 'read:users'], 'reader_role')
-    roles.grant_role(app.db, orm_api_token, rolename='reader_role')
+    # store scopes user does not have
+    orm_api_token.scopes = orm_api_token.scopes + ['list:users', 'read:users']
     headers = {'Authorization': 'token %s' % api_token}
     r = await api_request(app, 'users', headers=headers)
     assert r.status_code == 200
@@ -464,7 +469,8 @@ async def test_metascope_self_expansion(
     else:
         orm_obj = create_service_with_scopes('self')
     # test expansion of user/service scopes
-    scopes = roles.expand_roles_to_scopes(orm_obj)
+    scopes = get_scopes_for(orm_obj)
+    assert isinstance(scopes, frozenset)
     assert bool(scopes) == has_user_scopes
 
     # test expansion of token scopes
@@ -473,9 +479,9 @@ async def test_metascope_self_expansion(
     assert bool(token_scopes) == has_user_scopes
 
 
-async def test_metascope_all_expansion(app, create_user_with_scopes):
+async def test_metascope_inherit_expansion(app, create_user_with_scopes):
     user = create_user_with_scopes('self')
-    user.new_api_token()
+    user.new_api_token(scopes=["inherit"])
     token = user.api_tokens[0]
     # Check 'inherit' expansion
     token_scope_set = get_scopes_for(token)
@@ -483,10 +489,12 @@ async def test_metascope_all_expansion(app, create_user_with_scopes):
     assert user_scope_set == token_scope_set
 
     # Check no roles means no permissions
-    token.roles.clear()
+    token.scopes.clear()
     app.db.commit()
     token_scope_set = get_scopes_for(token)
-    assert not token_scope_set
+    assert isinstance(token_scope_set, frozenset)
+
+    assert token_scope_set.issubset(identify_scopes(user.orm_user))
 
 
 @mark.parametrize(
@@ -547,21 +555,28 @@ async def test_server_state_access(
             await api_request(
                 app, 'users', user.name, 'servers', server_name, method='post'
             )
-        service = create_service_with_scopes(*scopes)
+        service = create_service_with_scopes("read:users:name!user=", *scopes)
         api_token = service.new_api_token()
         headers = {'Authorization': 'token %s' % api_token}
+
+        # can I get the user model?
         r = await api_request(app, 'users', user.name, headers=headers)
-        r.raise_for_status()
-        user_model = r.json()
-        if num_servers:
-            assert 'servers' in user_model
-            server_models = user_model['servers']
-            assert len(server_models) == num_servers
-            for server, server_model in server_models.items():
-                assert keys_in.issubset(server_model)
-                assert keys_out.isdisjoint(server_model)
+        can_read_user_model = num_servers > 1 or 'read:users' in scopes
+        if can_read_user_model:
+            r.raise_for_status()
+            user_model = r.json()
+            if num_servers > 1:
+                assert 'servers' in user_model
+                server_models = user_model['servers']
+                assert len(server_models) == num_servers
+                for server, server_model in server_models.items():
+                    assert keys_in.issubset(server_model)
+                    assert keys_out.isdisjoint(server_model)
+            else:
+                assert 'servers' not in user_model
         else:
-            assert 'servers' not in user_model
+            assert r.status_code == 404
+
         r = await api_request(
             app,
             'users',
@@ -687,8 +702,8 @@ async def test_resolve_token_permissions(
     roles.strip_role(app.db, orm_user, "admin")
 
     # get expanded !user filter scopes for check
-    user_scopes = roles.expand_roles_to_scopes(orm_user)
-    token_scopes = roles.expand_roles_to_scopes(orm_api_token)
+    user_scopes = get_scopes_for(orm_user)
+    token_scopes = get_scopes_for(orm_api_token)
 
     token_retained_scopes = get_scopes_for(orm_api_token)
 
@@ -1047,3 +1062,234 @@ async def test_list_groups_filter(
         for name in sorted(expected)
     ]
     assert sorted(r.json(), key=itemgetter('name')) == expected_models
+
+
+@pytest.mark.parametrize(
+    "custom_scopes",
+    [
+        {"custom:okay": {"description": "simple custom scope"}},
+        {
+            "custom:parent": {
+                "description": "parent",
+                "subscopes": ["custom:child"],
+            },
+            "custom:child": {"description": "child"},
+        },
+        {
+            "custom:extra": {
+                "description": "I have extra info",
+                "extra": "warn about me",
+            }
+        },
+    ],
+)
+def test_custom_scopes(preserve_scopes, custom_scopes):
+    scopes.define_custom_scopes(custom_scopes)
+    for name, scope_def in custom_scopes.items():
+        assert name in scopes.scope_definitions
+        assert scopes.scope_definitions[name] == scope_def
+
+    # make sure describe works after registering custom scopes
+    scopes.describe_raw_scopes(list(custom_scopes.keys()))
+
+
+@pytest.mark.parametrize(
+    "custom_scopes",
+    [
+        {
+            "read:users": {
+                "description": "Can't override",
+            },
+        },
+        {
+            "custom:empty": {},
+        },
+        {
+            "notcustom:prefix": {"descroption": "bad prefix"},
+        },
+        {
+            "custom:!illegal": {"descroption": "bad character"},
+        },
+        {
+            "custom:badsubscope": {
+                "description": "non-custom subscope not allowed",
+                "subscopes": [
+                    "read:users",
+                ],
+            },
+        },
+        {
+            "custom:nosubscope": {
+                "description": "subscope not defined",
+                "subscopes": [
+                    "custom:undefined",
+                ],
+            },
+        },
+        {
+            "custom:badsubscope": {
+                "description": "subscope not a list",
+                "subscopes": "custom:notalist",
+            },
+            "custom:notalist": {
+                "description": "the subscope",
+            },
+        },
+    ],
+)
+def test_custom_scopes_bad(preserve_scopes, custom_scopes):
+    with pytest.raises(ValueError):
+        scopes.define_custom_scopes(custom_scopes)
+    assert scopes.scope_definitions == preserve_scopes
+
+
+async def test_user_filter_expansion(app, create_user_with_scopes):
+    scope_list = _expand_self_scope('ignored')
+    # turn !user=ignored into !user
+    # Mimic the role 'self' based on '!user' filter for tokens
+    scope_list = [scope.partition("=")[0] for scope in scope_list]
+    user = create_user_with_scopes('self')
+    user.new_api_token(scopes=scope_list)
+    user.new_api_token()
+    manual_scope_set = get_scopes_for(user.api_tokens[0])
+    auto_scope_set = get_scopes_for(user.api_tokens[1])
+    assert manual_scope_set == auto_scope_set
+
+
+@pytest.mark.parametrize(
+    "scopes, expected",
+    [
+        ("read:users:name!user", ["read:users:name!user={user}"]),
+        (
+            "users:activity!user",
+            [
+                "read:users:activity!user={user}",
+                "users:activity!user={user}",
+            ],
+        ),
+        ("self", ["*"]),
+        (["access:services", "access:services!service=x"], ["access:services"]),
+        ("access:services!service", ["access:services!service={service}"]),
+        ("access:servers!server", ["access:servers!server={server}"]),
+    ],
+)
+def test_expand_scopes(app, user, scopes, expected, mockservice_external):
+    if isinstance(scopes, str):
+        scopes = [scopes]
+
+    db = app.db
+    service = mockservice_external
+    spawner_name = "salmon"
+    server_name = f"{user.name}/{spawner_name}"
+    if 'server' in str(scopes):
+        oauth_client = orm.OAuthClient()
+        db.add(oauth_client)
+        spawner = user.spawners[spawner_name]
+        spawner.orm_spawner.oauth_client = oauth_client
+        db.commit()
+        assert oauth_client.spawner is spawner.orm_spawner
+    else:
+        oauth_client = service.oauth_client
+        assert oauth_client is not None
+
+    def format_scopes(scopes):
+        return {
+            s.format(service=service.name, server=server_name, user=user.name)
+            for s in scopes
+        }
+
+    scopes = format_scopes(scopes)
+    expected = format_scopes(expected)
+
+    if "*" in expected:
+        expected.remove("*")
+        expected.update(_expand_self_scope(user.name))
+
+    expanded = expand_scopes(scopes, owner=user.orm_user, oauth_client=oauth_client)
+    assert isinstance(expanded, frozenset)
+    assert sorted(expanded) == sorted(expected)
+
+
+@pytest.mark.parametrize(
+    "requested_scopes, have_scopes, expected_allowed, expected_disallowed",
+    [
+        (
+            ["read:users:name!user"],
+            ["read:users:name!user={user}"],
+            ["read:users:name!user"],
+            [],
+        ),
+        (
+            ["read:servers!server"],
+            ["read:servers!user"],
+            ["read:servers!server"],
+            [],
+        ),
+        (
+            ["read:servers!server={server}"],
+            ["read:servers"],
+            ["read:servers!server={server}"],
+            [],
+        ),
+        (
+            ["admin:servers!server"],
+            ["read:servers"],
+            ["read:servers!server={server}"],
+            ["admin:servers!server"],
+        ),
+        (
+            ["admin:servers", "read:users"],
+            ["read:users"],
+            ["read:users"],
+            ["admin:servers"],
+        ),
+    ],
+)
+def test_resolve_requested_scopes(
+    app,
+    user,
+    group,
+    requested_scopes,
+    have_scopes,
+    expected_allowed,
+    expected_disallowed,
+    mockservice_external,
+):
+    if isinstance(requested_scopes, str):
+        requested_scopes = [requested_scopes]
+
+    db = app.db
+    service = mockservice_external
+    spawner_name = "salmon"
+    server_name = f"{user.name}/{spawner_name}"
+    if '!server' in str(requested_scopes + have_scopes):
+        oauth_client = orm.OAuthClient()
+        db.add(oauth_client)
+        spawner = user.spawners[spawner_name]
+        spawner.orm_spawner.oauth_client = oauth_client
+        db.commit()
+        assert oauth_client.spawner is spawner.orm_spawner
+    else:
+        oauth_client = service.oauth_client
+        assert oauth_client is not None
+
+    def format_scopes(scopes):
+        return {
+            s.format(service=service.name, server=server_name, user=user.name)
+            for s in scopes
+        }
+
+    requested_scopes = format_scopes(requested_scopes)
+    have_scopes = format_scopes(have_scopes)
+    expected_allowed = format_scopes(expected_allowed)
+    expected_disallowed = format_scopes(expected_disallowed)
+
+    allowed, disallowed = _resolve_requested_scopes(
+        requested_scopes,
+        have_scopes,
+        user=user.orm_user,
+        client=oauth_client,
+        db=db,
+    )
+    assert allowed == expected_allowed
+    assert disallowed == expected_disallowed

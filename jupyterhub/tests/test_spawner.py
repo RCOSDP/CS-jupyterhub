@@ -16,14 +16,11 @@ import pytest
 
 from .. import orm
 from .. import spawner as spawnermod
-from ..objects import Hub
-from ..objects import Server
-from ..spawner import LocalProcessSpawner
-from ..spawner import Spawner
+from ..objects import Hub, Server
+from ..scopes import access_scopes
+from ..spawner import LocalProcessSpawner, Spawner
 from ..user import User
-from ..utils import AnyTimeoutError
-from ..utils import new_token
-from ..utils import url_path_join
+from ..utils import AnyTimeoutError, new_token, url_path_join
 from .mocking import public_url
 from .test_api import add_user
 from .utils import async_requests
@@ -440,14 +437,16 @@ async def test_hub_connect_url(db):
     )
 
 
-async def test_spawner_oauth_roles(app, user):
-    allowed_roles = ["admin", "user"]
+async def test_spawner_oauth_scopes(app, user):
+    allowed_scopes = ["read:users"]
     spawner = user.spawners['']
-    spawner.oauth_roles = allowed_roles
+    spawner.oauth_client_allowed_scopes = allowed_scopes
     # exercise start/stop which assign roles to oauth client
     await spawner.user.spawn()
     oauth_client = spawner.orm_spawner.oauth_client
-    assert sorted(role.name for role in oauth_client.allowed_roles) == allowed_roles
+    assert sorted(oauth_client.allowed_scopes) == sorted(
+        allowed_scopes + list(access_scopes(oauth_client))
+    )
     await spawner.user.stop()
 
 

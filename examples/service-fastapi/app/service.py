@@ -1,14 +1,9 @@
 import os
 
-from fastapi import APIRouter
-from fastapi import Depends
-from fastapi import Form
-from fastapi import Request
+from fastapi import APIRouter, Depends, Form, Request
 
 from .client import get_client
-from .models import AuthorizationError
-from .models import HubApiError
-from .models import User
+from .models import AuthorizationError, HubApiError, User
 from .security import get_current_user
 
 # APIRouter prefix cannot end in /
@@ -56,7 +51,7 @@ async def me(user: User = Depends(get_current_user)):
 
 
 @router.get("/debug")
-async def index(request: Request, user: User = Depends(get_current_user)):
+async def debug(request: Request, user: User = Depends(get_current_user)):
     """
     Authenticated function that returns a few pieces of debug
      * Environ of the service process

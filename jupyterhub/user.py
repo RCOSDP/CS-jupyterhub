@@ -1,36 +1,31 @@
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import json
+import string
 import warnings
 from collections import defaultdict
-from datetime import datetime
-from datetime import timedelta
-from urllib.parse import quote
-from urllib.parse import urlparse
+from datetime import datetime, timedelta
+from functools import lru_cache
+from urllib.parse import quote, urlparse
 
 from sqlalchemy import inspect
-from tornado import gen
-from tornado import web
+from tornado import gen, web
 from tornado.httputil import urlencode
 from tornado.log import app_log
 
 from . import orm
-from ._version import __version__
-from ._version import _check_version
-from .crypto import CryptKeeper
-from .crypto import decrypt
-from .crypto import encrypt
-from .crypto import EncryptionUnavailable
-from .crypto import InvalidToken
-from .metrics import RUNNING_SERVERS
-from .metrics import TOTAL_USERS
+from ._version import __version__, _check_version
+from .crypto import CryptKeeper, EncryptionUnavailable, InvalidToken, decrypt, encrypt
+from .metrics import RUNNING_SERVERS, TOTAL_USERS
 from .objects import Server
 from .spawner import LocalProcessSpawner
-from .utils import AnyTimeoutError
-from .utils import make_ssl_context
-from .utils import maybe_future
-from .utils import url_path_join
-
+from .utils import (
+    AnyTimeoutError,
+    make_ssl_context,
+    maybe_future,
+    url_escape_path,
+    url_path_join,
+)
 
 # detailed messages about the most common failure-to-start errors,
 # which manifest timeouts during start
@@ -59,6 +54,42 @@ Common causes of this timeout, and debugging tips:
    To fix: increase `Spawner.http_timeout` configuration
    to a number of seconds that is enough for servers to become responsive.
 """
+
+# set of chars that are safe in dns labels
+# (allow '.' because we don't mind multiple levels of subdomains)
+_dns_safe = set(string.ascii_letters + string.digits + '-.')
+# don't escape % because it's the escape char and we handle it separately
+_dns_needs_replace = _dns_safe | {"%"}
+
+
+@lru_cache()
+def _dns_quote(name):
+    """Escape a name for use in a dns label
+
+    this is _NOT_ fully domain-safe, but works often enough for realistic usernames.
+    Fully safe would be full IDNA encoding,
+    PLUS escaping non-IDNA-legal ascii,
+    PLUS some encoding of boundary conditions
+    """
+    # escape name for subdomain label
+    label = quote(name, safe="").lower()
+    # some characters are not handled by quote,
+    # because they are legal in URLs but not domains,
+    # specifically _ and ~ (starting in 3.7).
+    # Escape these in the same way (%{hex_codepoint}).
+    unique_chars = set(label)
+    for c in unique_chars:
+        if c not in _dns_needs_replace:
+            label = label.replace(c, f"%{ord(c):x}")
+
+    # underscore is our escape char -
+    # it's not officially legal in hostnames,
+    # but is valid in _domain_ names (?),
+    # and always works in practice.
+    # FIXME: We should consider switching to proper IDNA encoding
+    # for 3.0.
+    label = label.replace("%", "_")
+    return label
 
 
 class UserDict(dict):
@@ -279,19 +310,19 @@ class User:
             return
 
         # log group changes
-        new_groups = set(group_names).difference(current_groups)
+        added_groups = new_groups.difference(current_groups)
         removed_groups = current_groups.difference(group_names)
-        if new_groups:
-            self.log.info(f"Adding user {self.name} to group(s): {new_groups}")
+        if added_groups:
+            self.log.info(f"Adding user {self.name} to group(s): {added_groups}")
         if removed_groups:
             self.log.info(f"Removing user {self.name} from group(s): {removed_groups}")
 
         if group_names:
             groups = (
-                self.db.query(orm.Group).filter(orm.Group.name.in_(group_names)).all()
+                self.db.query(orm.Group).filter(orm.Group.name.in_(new_groups)).all()
             )
             existing_groups = {g.name for g in groups}
-            for group_name in group_names:
+            for group_name in added_groups:
                 if group_name not in existing_groups:
                     # create groups that don't exist yet
                     self.log.info(
@@ -300,9 +331,9 @@ class User:
                     group = orm.Group(name=group_name)
                     self.db.add(group)
                     groups.append(group)
-            self.groups = groups
+            self.orm_user.groups = groups
         else:
-            self.groups = []
+            self.orm_user.groups = []
         self.db.commit()
 
     async def save_auth_state(self, auth_state):
@@ -423,8 +454,10 @@ class User:
             hub=self.settings.get('hub'),
             authenticator=self.authenticator,
             config=self.settings.get('config'),
-            proxy_spec=url_path_join(self.proxy_spec, server_name, '/'),
-            db=self.db,
+            proxy_spec=url_path_join(
+                self.proxy_spec, url_escape_path(server_name), '/'
+            ),
+            _deprecated_db_session=self.db,
             oauth_client_id=client_id,
             cookie_options=self.settings.get('cookie_options', {}),
             trusted_alt_names=trusted_alt_names,
@@ -507,7 +540,7 @@ class User:
     @property
     def escaped_name(self):
         """My name, escaped for use in URLs, cookies, etc."""
-        return quote(self.name, safe='@~')
+        return url_escape_path(self.name)
 
     @property
     def json_escaped_name(self):
@@ -525,10 +558,8 @@ class User:
     @property
     def domain(self):
         """Get the domain for my server."""
-        # use underscore as escape char for domains
-        return (
-            quote(self.name).replace('%', '_').lower() + '.' + self.settings['domain']
-        )
+
+        return _dns_quote(self.name) + '.' + self.settings['domain']
 
     @property
     def host(self):
@@ -556,13 +587,13 @@ class User:
         if not server_name:
             return self.url
         else:
-            return url_path_join(self.url, server_name)
+            return url_path_join(self.url, url_escape_path(server_name))
 
     def progress_url(self, server_name=''):
         """API URL for progress endpoint for a server with a given name"""
         url_parts = [self.settings['hub'].base_url, 'api/users', self.escaped_name]
         if server_name:
-            url_parts.extend(['servers', server_name, 'progress'])
+            url_parts.extend(['servers', url_escape_path(server_name), 'progress'])
         else:
             url_parts.extend(['server/progress'])
         return url_path_join(*url_parts)
@@ -636,7 +667,7 @@ class User:
         if handler:
             await self.refresh_auth(handler)
 
-        base_url = url_path_join(self.base_url, server_name) + '/'
+        base_url = url_path_join(self.base_url, url_escape_path(server_name)) + '/'
 
         orm_server = orm.Server(base_url=base_url)
         db.add(orm_server)
@@ -671,28 +702,12 @@ class User:
         client_id = spawner.oauth_client_id
         oauth_provider = self.settings.get('oauth_provider')
         if oauth_provider:
-            allowed_roles = spawner.oauth_roles
-            if callable(allowed_roles):
-                allowed_roles = allowed_roles(spawner)
-
-            # allowed_roles config is a list of strings
-            # oauth provider.allowed_roles is a list of orm.Roles
-            if allowed_roles:
-                allowed_role_names = allowed_roles
-                allowed_roles = list(
-                    self.db.query(orm.Role).filter(orm.Role.name.in_(allowed_roles))
-                )
-                if len(allowed_roles) != len(allowed_role_names):
-                    missing_roles = set(allowed_role_names).difference(
-                        {role.name for role in allowed_roles}
-                    )
-                    raise ValueError(f"No such role(s): {', '.join(missing_roles)}")
-
+            allowed_scopes = await spawner._get_oauth_client_allowed_scopes()
             oauth_client = oauth_provider.add_client(
                 client_id,
                 api_token,
-                url_path_join(self.url, server_name, 'oauth_callback'),
-                allowed_roles=allowed_roles,
+                url_path_join(self.url, url_escape_path(server_name), 'oauth_callback'),
+                allowed_scopes=allowed_scopes,
                 description="Server at %s"
                 % (url_path_join(self.base_url, server_name) + '/'),
             )
@@ -798,7 +813,9 @@ class User:
                     oauth_provider.add_client(
                         client_id,
                         spawner.api_token,
-                        url_path_join(self.url, server_name, 'oauth_callback'),
+                        url_path_join(
+                            self.url, url_escape_path(server_name), 'oauth_callback'
+                        ),
                     )
                     db.commit()
 

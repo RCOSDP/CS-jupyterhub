@@ -1,5 +1,4 @@
 """Tests for services"""
-import asyncio
 import os
 import sys
 from binascii import hexlify
@@ -7,16 +6,15 @@ from subprocess import Popen
 
 from async_generator import asynccontextmanager
 
-from .. import orm
-from ..roles import update_roles
-from ..utils import exponential_backoff
-from ..utils import maybe_future
-from ..utils import random_port
-from ..utils import url_path_join
-from ..utils import wait_for_http_server
+from ..utils import (
+    exponential_backoff,
+    maybe_future,
+    random_port,
+    url_path_join,
+    wait_for_http_server,
+)
 from .mocking import public_url
-from .utils import async_requests
-from .utils import skip_if_ssl
+from .utils import async_requests, skip_if_ssl
 
 mockservice_path = os.path.dirname(os.path.abspath(__file__))
 mockservice_py = os.path.join(mockservice_path, 'mockservice.py')
@@ -97,9 +95,11 @@ async def test_external_service(app):
         service = app._service_map[name]
         assert service.oauth_available
         assert service.oauth_client is not None
-        assert service.oauth_client.allowed_roles == [orm.Role.find(app.db, "user")]
+        assert set(service.oauth_client.allowed_scopes) == {
+            "self",
+            f"access:services!service={name}",
+        }
         api_token = service.orm.api_tokens[0]
-        update_roles(app.db, api_token, roles=['token'])
         url = public_url(app, service) + '/api/users'
         r = await async_requests.get(url, allow_redirects=False)
         r.raise_for_status()

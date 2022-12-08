@@ -1,11 +1,5 @@
-from . import auth
-from . import groups
-from . import hub
-from . import notifications
-from . import proxy
-from . import services
-from . import users
-from .base import *
+from . import auth, groups, hub, notifications, proxy, services, users
+from .base import *  # noqa
 
 default_handlers = []
 for mod in (auth, hub, proxy, users, groups, services, notifications):

@@ -10,6 +10,7 @@ import { createStore } from "redux";
 import regeneratorRuntime from "regenerator-runtime";
 
 import ServerDashboard from "./ServerDashboard";
+import { initialState, reducers } from "../../Store";
 import * as sinon from "sinon";
 
 let clock;
@@ -20,7 +21,7 @@ jest.mock("react-redux", () => ({
 }));
 
 var serverDashboardJsx = (spy) => (
-  <Provider store={createStore(() => {}, {})}>
+  <Provider store={createStore(mockReducers, mockAppState())}>
     <HashRouter>
       <Switch>
         <ServerDashboard
@@ -44,10 +45,67 @@ var mockAsync = (data) =>
 var mockAsyncRejection = () =>
   jest.fn().mockImplementation(() => Promise.reject());
 
-var mockAppState = () => ({
-  user_data: JSON.parse(
-    '[{"kind":"user","name":"foo","admin":true,"groups":[],"server":"/user/foo/","pending":null,"created":"2020-12-07T18:46:27.112695Z","last_activity":"2020-12-07T21:00:33.336354Z","servers":{"":{"name":"","last_activity":"2020-12-07T20:58:02.437408Z","started":"2020-12-07T20:58:01.508266Z","pending":null,"ready":true,"state":{"pid":28085},"url":"/user/foo/","user_options":{},"progress_url":"/hub/api/users/foo/server/progress"}}},{"kind":"user","name":"bar","admin":false,"groups":[],"server":null,"pending":null,"created":"2020-12-07T18:46:27.115528Z","last_activity":"2020-12-07T20:43:51.013613Z","servers":{}}]'
-  ),
+var mockAppState = () =>
+  Object.assign({}, initialState, {
+    user_data: [
+      {
+        kind: "user",
+        name: "foo",
+        admin: true,
+        groups: [],
+        server: "/user/foo/",
+        pending: null,
+        created: "2020-12-07T18:46:27.112695Z",
+        last_activity: "2020-12-07T21:00:33.336354Z",
+        servers: {
+          "": {
+            name: "",
+            last_activity: "2020-12-07T20:58:02.437408Z",
+            started: "2020-12-07T20:58:01.508266Z",
+            pending: null,
+            ready: true,
+            state: { pid: 28085 },
+            url: "/user/foo/",
+            user_options: {},
+            progress_url: "/hub/api/users/foo/server/progress",
+          },
+        },
+      },
+      {
+        kind: "user",
+        name: "bar",
+        admin: false,
+        groups: [],
+        server: null,
+        pending: null,
+        created: "2020-12-07T18:46:27.115528Z",
+        last_activity: "2020-12-07T20:43:51.013613Z",
+        servers: {},
+      },
+    ],
+    user_page: {
+      offset: 0,
+      limit: 2,
+      total: 4,
+      next: {
+        offset: 2,
+        limit: 2,
+        url: "http://localhost:8000/hub/api/groups?offset=2&limit=2",
+      },
+    },
+  });
+
+var mockReducers = jest.fn((state, action) => {
+  if (action.type === "USER_PAGE" && !action.value.data) {
+    // no-op from mock, don't update state
+    return state;
+  }
+  state = reducers(state, action);
+  // mocked useSelector seems to cause a problem
+  // this should get the right state back?
+  // not sure
+  // useSelector.mockImplementation((callback) => callback(state);
+  return state;
 });
 
 beforeEach(() => {
@@ -59,6 +117,7 @@ beforeEach(() => {
 
 afterEach(() => {
   useSelector.mockClear();
+  mockReducers.mockClear();
   clock.restore();
 });
 
@@ -98,6 +157,18 @@ test("Renders correctly the status of a single-user server", async () => {
 
   expect(start).toBeVisible();
   expect(stop).toBeVisible();
+});
+
+test("Renders spawn page link", async () => {
+  let callbackSpy = mockAsync();
+
+  await act(async () => {
+    render(serverDashboardJsx(callbackSpy));
+  });
+
+  let link = screen.getByText("Spawn Page").closest("a");
+  let url = new URL(link.href);
+  expect(url.pathname).toEqual("/spawn/bar");
 });
 
 test("Invokes the startServer event on button click", async () => {
@@ -302,7 +373,7 @@ test("Shows a UI error dialogue when start all servers fails", async () => {
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
@@ -338,7 +409,7 @@ test("Shows a UI error dialogue when stop all servers fails", async () => {
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
@@ -374,7 +445,7 @@ test("Shows a UI error dialogue when start user server fails", async () => {
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
@@ -410,7 +481,7 @@ test("Shows a UI error dialogue when start user server returns an improper statu
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
@@ -446,7 +517,7 @@ test("Shows a UI error dialogue when stop user servers fails", async () => {
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
@@ -482,7 +553,7 @@ test("Shows a UI error dialogue when stop user server returns an improper status
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
@@ -504,7 +575,7 @@ test("Search for user calls updateUsers with name filter", async () => {
   });
   await act(async () => {
     render(
-      <Provider store={createStore(() => {}, {})}>
+      <Provider store={createStore(mockReducers, mockAppState())}>
         <HashRouter>
           <Switch>
             <ServerDashboard
@@ -519,12 +590,16 @@ test("Search for user calls updateUsers with name filter", async () => {
             />
           </Switch>
         </HashRouter>
-      </Provider>
+      </Provider>,
     );
   });
 
   let search = screen.getByLabelText("user-search");
 
+  expect(mockUpdateUsers.mock.calls).toHaveLength(1);
+
+  userEvent.type(search, "a");
+  expect(search.value).toEqual("a");
   userEvent.type(search, "a");
   expect(search.value).toEqual("a");
   clock.tick(400);
@@ -534,6 +609,53 @@ test("Search for user calls updateUsers with name filter", async () => {
   userEvent.type(search, "b");
   expect(search.value).toEqual("ab");
   clock.tick(400);
+  expect(mockReducers.mock.calls).toHaveLength(3);
+  var lastState =
+    mockReducers.mock.results[mockReducers.mock.results.length - 1].value;
+  expect(lastState.name_filter).toEqual("a");
+  // TODO: this should
+  expect(mockUpdateUsers.mock.calls).toHaveLength(1);
+  userEvent.type(search, "b");
+  expect(search.value).toEqual("ab");
+  clock.tick(400);
+  expect(mockReducers.mock.calls).toHaveLength(4);
+  lastState =
+    mockReducers.mock.results[mockReducers.mock.results.length - 1].value;
+  expect(lastState.name_filter).toEqual("ab");
+  expect(lastState.user_page.offset).toEqual(0);
+});
+
+test("Interacting with PaginationFooter causes state update and refresh via useEffect call", async () => {
+  let callbackSpy = mockAsync();
+
+  await act(async () => {
+    render(serverDashboardJsx(callbackSpy));
+  });
+
+  expect(callbackSpy).toBeCalledWith(0, 2, "");
+
+  expect(mockReducers.mock.results).toHaveLength(2);
+  lastState =
+    mockReducers.mock.results[mockReducers.mock.results.length - 1].value;
+  console.log(lastState);
+  expect(lastState.user_page.offset).toEqual(0);
+  expect(lastState.user_page.limit).toEqual(2);
+
+  let next = screen.getByTestId("paginate-next");
+  fireEvent.click(next);
+  clock.tick(400);
+
+  expect(mockReducers.mock.results).toHaveLength(3);
+  var lastState =
+    mockReducers.mock.results[mockReducers.mock.results.length - 1].value;
+  expect(lastState.user_page.offset).toEqual(2);
+  expect(lastState.user_page.limit).toEqual(2);
+
+  // FIXME: should call updateUsers, does in reality.
+  // tests don't reflect reality due to mocked state/useSelector
+  // unclear how to fix this.
+  // expect(callbackSpy.mock.calls).toHaveLength(2);
+  // expect(callbackSpy).toHaveBeenCalledWith(2, 2, "");
   expect(mockUpdateUsers.mock.calls[2][2]).toEqual("ab");
   expect(mockUpdateUsers.mock.calls).toHaveLength(3);
 });

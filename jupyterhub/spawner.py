@@ -14,34 +14,40 @@ import warnings
 from inspect import signature
 from subprocess import Popen
 from tempfile import mkdtemp
+from textwrap import dedent
 from urllib.parse import urlparse
 
 from async_generator import aclosing
 from sqlalchemy import inspect
 from tornado.ioloop import PeriodicCallback
-from traitlets import Any
-from traitlets import Bool
-from traitlets import default
-from traitlets import Dict
-from traitlets import Float
-from traitlets import Instance
-from traitlets import Integer
-from traitlets import List
-from traitlets import observe
-from traitlets import Unicode
-from traitlets import Union
-from traitlets import validate
+from traitlets import (
+    Any,
+    Bool,
+    Dict,
+    Float,
+    Instance,
+    Integer,
+    List,
+    Unicode,
+    Union,
+    default,
+    observe,
+    validate,
+)
 from traitlets.config import LoggingConfigurable
 
+from . import orm
 from .objects import Server
-from .traitlets import ByteSpecification
-from .traitlets import Callable
-from .traitlets import Command
-from .utils import AnyTimeoutError
-from .utils import exponential_backoff
-from .utils import maybe_future
-from .utils import random_port
-from .utils import url_path_join
+from .roles import roles_to_scopes
+from .traitlets import ByteSpecification, Callable, Command
+from .utils import (
+    AnyTimeoutError,
+    exponential_backoff,
+    maybe_future,
+    random_port,
+    url_escape_path,
+    url_path_join,
+)
 
 if os.name == 'nt':
     import psutil
@@ -155,8 +161,26 @@ class Spawner(LoggingConfigurable):
     authenticator = Any()
     hub = Any()
     orm_spawner = Any()
-    db = Any()
     cookie_options = Dict()
+
+    db = Any()
+
+    @default("db")
+    def _deprecated_db(self):
+        self.log.warning(
+            dedent(
+                """
+                The shared database session at Spawner.db is deprecated, and will be removed.
+                Please manage your own database and connections.
+
+                Contact JupyterHub at https://github.com/jupyterhub/jupyterhub/issues/3700
+                if you have questions or ideas about direct database needs for your Spawner.
+                """
+            ),
+        )
+        return self._deprecated_db_session
+
+    _deprecated_db_session = Any()
 
     @observe('orm_spawner')
     def _orm_spawner_changed(self, change):
@@ -252,8 +276,25 @@ class Spawner(LoggingConfigurable):
 
     oauth_scopes = List(Unicode())
 
-    @default("oauth_scopes")
-    def _default_oauth_scopes(self):
+    @property
+    def oauth_scopes(self):
+        warnings.warn(
+            """Spawner.oauth_scopes is deprecated in JupyterHub 2.3.
+
+            Use Spawner.oauth_access_scopes
+            """,
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return self.oauth_access_scopes
+
+    oauth_access_scopes = List(
+        Unicode(),
+        help="""The scope(s) needed to access this server""",
+    )
+
+    @default("oauth_access_scopes")
+    def _default_access_scopes(self):
         return [
             f"access:servers!server={self.user.name}/{self.name}",
             f"access:servers!user={self.user.name}",
@@ -265,6 +306,8 @@ class Spawner(LoggingConfigurable):
         [Callable(), List()],
         help="""Allowed roles for oauth tokens.
 
+        Deprecated in 3.0: use oauth_client_allowed_scopes
+
         This sets the maximum and default roles
         assigned to oauth tokens issued by a single-user server's
         oauth client (i.e. tokens stored in browsers after authenticating with the server),
@@ -272,8 +315,72 @@ class Spawner(LoggingConfigurable):
 
         Default is an empty list, meaning minimal permissions to identify users,
         no actions can be taken on their behalf.
+        """,
+    ).tag(config=True)
+
+    oauth_client_allowed_scopes = Union(
+        [Callable(), List()],
+        help="""Allowed scopes for oauth tokens issued by this server's oauth client.
+
+        This sets the maximum and default scopes
+        assigned to oauth tokens issued by a single-user server's
+        oauth client (i.e. tokens stored in browsers after authenticating with the server),
+        defining what actions the server can take on behalf of logged-in users.
+
+        Default is an empty list, meaning minimal permissions to identify users,
+        no actions can be taken on their behalf.
+
+        If callable, will be called with the Spawner as a single argument.
+        Callables may be async.
     """,
     ).tag(config=True)
+
+    async def _get_oauth_client_allowed_scopes(self):
+        """Private method: get oauth allowed scopes
+
+        Handle:
+
+        - oauth_client_allowed_scopes
+        - callable config
+        - deprecated oauth_roles config
+        - access_scopes
+        """
+        # cases:
+        # 1. only scopes
+        # 2. only roles
+        # 3. both! (conflict, favor scopes)
+        scopes = []
+        if self.oauth_client_allowed_scopes:
+            allowed_scopes = self.oauth_client_allowed_scopes
+            if callable(allowed_scopes):
+                allowed_scopes = allowed_scopes(self)
+                if inspect.isawaitable(allowed_scopes):
+                    allowed_scopes = await allowed_scopes
+            scopes.extend(allowed_scopes)
+
+        if self.oauth_roles:
+            if scopes:
+                # both defined! Warn
+                warnings.warn(
+                    f"Ignoring deprecated Spawner.oauth_roles={self.oauth_roles} in favor of Spawner.oauth_client_allowed_scopes.",
+                )
+            else:
+                role_names = self.oauth_roles
+                if callable(role_names):
+                    role_names = role_names(self)
+                roles = list(
+                    self.db.query(orm.Role).filter(orm.Role.name.in_(role_names))
+                )
+                if len(roles) != len(role_names):
+                    missing_roles = set(role_names).difference(
+                        {role.name for role in roles}
+                    )
+                    raise ValueError(f"No such role(s): {', '.join(missing_roles)}")
+                scopes.extend(roles_to_scopes(roles))
+
+        # always add access scope
+        scopes.append(f"access:servers!server={self.user.name}/{self.name}")
+        return sorted(set(scopes))
 
     will_resume = Bool(
         False,
@@ -789,7 +896,6 @@ class Spawner(LoggingConfigurable):
         Override in subclasses to restore any extra state that is needed to track
         the single-user server for that user. Subclasses should call super().
         """
-        pass
 
     def get_state(self):
         """Save state of spawner into database.
@@ -850,10 +956,17 @@ class Spawner(LoggingConfigurable):
             env['JUPYTERHUB_COOKIE_OPTIONS'] = json.dumps(self.cookie_options)
         env['JUPYTERHUB_HOST'] = self.hub.public_host
         env['JUPYTERHUB_OAUTH_CALLBACK_URL'] = url_path_join(
-            self.user.url, self.name, 'oauth_callback'
+            self.user.url, url_escape_path(self.name), 'oauth_callback'
         )
 
-        env['JUPYTERHUB_OAUTH_SCOPES'] = json.dumps(self.oauth_scopes)
+        # deprecated env, renamed in 3.0 for disambiguation
+        env['JUPYTERHUB_OAUTH_SCOPES'] = json.dumps(self.oauth_access_scopes)
+        env['JUPYTERHUB_OAUTH_ACCESS_SCOPES'] = json.dumps(self.oauth_access_scopes)
+
+        # added in 3.0
+        env['JUPYTERHUB_OAUTH_CLIENT_ALLOWED_SCOPES'] = json.dumps(
+            self.oauth_client_allowed_scopes
+        )
 
         # Info previously passed on args
         env['JUPYTERHUB_USER'] = self.user.name
@@ -1121,10 +1234,7 @@ class Spawner(LoggingConfigurable):
     async def run_auth_state_hook(self, auth_state):
         """Run the auth_state_hook if defined"""
         if self.auth_state_hook is not None:
-            try:
-                await maybe_future(self.auth_state_hook(self, auth_state))
-            except Exception:
-                self.log.exception("auth_state_hook failed with exception: %s", self)
+            await maybe_future(self.auth_state_hook(self, auth_state))
 
     @property
     def _progress_url(self):
@@ -1230,7 +1340,6 @@ class Spawner(LoggingConfigurable):
 
         Stopping a server does *not* call this method.
         """
-        pass
 
     def add_poll_callback(self, callback, *args, **kwargs):
         """Add a callback to fire when the single-user server stops"""

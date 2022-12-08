@@ -35,6 +35,17 @@ A Service may have the following properties:
   the service will be added to the proxy at `/services/:name`
 - `api_token: str (default - None)` - For Externally-Managed Services you need to specify
   an API token to perform API requests to the Hub
+- `display: bool (default - True)` - When set to true, display a link to the
+  service's URL under the 'Services' dropdown in user's hub home page.
+
+- `oauth_no_confirm: bool (default - False)` - When set to true,
+  skip the OAuth confirmation page when users access this service.
+
+  By default, when users authenticate with a service using JupyterHub,
+  they are prompted to confirm that they want to grant that service
+  access to their credentials.
+  Skipping the confirmation page is useful for admin-managed services that are considered part of the Hub
+  and shouldn't need extra prompts for login.
 
 If a service is also to be managed by the Hub, it has a few extra options:
 
@@ -50,7 +61,7 @@ If a service is also to be managed by the Hub, it has a few extra options:
 A **Hub-Managed Service** is started by the Hub, and the Hub is responsible
 for the Service's actions. A Hub-Managed Service can only be a local
 subprocess of the Hub. The Hub will take care of starting the process and
-restarts it if it stops.
+restart the service if the service stops.
 
 While Hub-Managed Services share some similarities with notebook Spawners,
 there are no plans for Hub-Managed Services to support the same spawning
@@ -114,7 +125,10 @@ JUPYTERHUB_BASE_URL:       Base URL of the Hub (https://mydomain[:port]/)
 JUPYTERHUB_SERVICE_PREFIX: URL path prefix of this service (/services/:service-name/)
 JUPYTERHUB_SERVICE_URL:    Local URL where the service is expected to be listening.
                            Only for proxied web services.
-JUPYTERHUB_OAUTH_SCOPES:   JSON-serialized list of scopes to use for allowing access to the service.
+JUPYTERHUB_OAUTH_SCOPES:   JSON-serialized list of scopes to use for allowing access to the service
+                           (deprecated in 3.0, use JUPYTERHUB_OAUTH_ACCESS_SCOPES).
+JUPYTERHUB_OAUTH_ACCESS_SCOPES: JSON-serialized list of scopes to use for allowing access to the service (new in 3.0).
+JUPYTERHUB_OAUTH_CLIENT_ALLOWED_SCOPES: JSON-serialized list of scopes that can be requested by the oauth client on behalf of users (new in 3.0).
 ```
 
 For the previous 'cull idle' Service example, these environment variables
@@ -172,7 +186,7 @@ information to the Service via the environment variables described above. A
 flexible Service, whether managed by the Hub or not, can make use of these
 same environment variables.
 
-When you run a service that has a url, it will be accessible under a
+When you run a service that has a URL, it will be accessible under a
 `/services/` prefix, such as `https://myhub.horse/services/my-service/`. For
 your service to route proxied requests properly, it must take
 `JUPYTERHUB_SERVICE_PREFIX` into account when routing requests. For example, a
@@ -220,8 +234,17 @@ There are two levels of authentication with the Hub:
 - {class}`.HubOAuth` - For services that should use oauth to authenticate with the Hub.
   This should be used for any service that serves pages that should be visited with a browser.
 
-To use HubAuth, you must set the `.api_token`, either programmatically when constructing the class,
-or via the `JUPYTERHUB_API_TOKEN` environment variable.
+To use HubAuth, you must set the `.api_token` instance variable. This can be
+done either programmatically when constructing the class, or via the
+`JUPYTERHUB_API_TOKEN` environment variable. A number of the examples in the
+root of the jupyterhub git repository set the `JUPYTERHUB_API_TOKEN` variable
+so consider having a look at those for futher reading
+([cull-idle](https://github.com/jupyterhub/jupyterhub/tree/master/examples/cull-idle),
+[external-oauth](https://github.com/jupyterhub/jupyterhub/tree/master/examples/external-oauth),
+[service-notebook](https://github.com/jupyterhub/jupyterhub/tree/master/examples/service-notebook)
+and [service-whoiami](https://github.com/jupyterhub/jupyterhub/tree/master/examples/service-whoami))
+
+(TODO: Where is this API TOKen set?)
 
 Most of the logic for authentication implementation is found in the
 {meth}`.HubAuth.user_for_token` methods,
@@ -235,7 +258,7 @@ which makes a request of the Hub, and returns:
     "name": "username",
     "groups": ["list", "of", "groups"],
     "scopes": [
-        "access:users:servers!server=username/",
+        "access:servers!server=username/",
     ],
   }
   ```
@@ -254,7 +277,7 @@ you can access the token authenticating the current request with {meth}`.HubAuth
 :::{versionchanged} 2.2
 
 {meth}`.HubAuth.get_token` adds support for retrieving
-tokens stored in tornado cookies after completion of OAuth.
+tokens stored in tornado cookies after the completion of OAuth.
 Previously, it only retrieved tokens from URL parameters or the Authorization header.
 Passing `get_token(handler, in_cookie=False)` preserves this behavior.
 :::
@@ -374,10 +397,10 @@ The `scopes` field can be used to manage access.
 Note: a user will have access to a service to complete oauth access to the service for the first time.
 Individual permissions may be revoked at any later point without revoking the token,
 in which case the `scopes` field in this model should be checked on each access.
-The default required scopes for access are available from `hub_auth.oauth_scopes` or `$JUPYTERHUB_OAUTH_SCOPES`.
+The default required scopes for access are available from `hub_auth.oauth_scopes` or `$JUPYTERHUB_OAUTH_ACCESS_SCOPES`.
 
 An example of using an Externally-Managed Service and authentication is
-in [nbviewer README][nbviewer example] section on securing the notebook viewer,
+in the [nbviewer README][nbviewer example] section on securing the notebook viewer,
 and an example of its configuration is found [here](https://github.com/jupyter/nbviewer/blob/ed942b10a52b6259099e2dd687930871dc8aac22/nbviewer/providers/base.py#L95).
 nbviewer can also be run as a Hub-Managed Service as described [nbviewer README][nbviewer example]
 section on securing the notebook viewer.

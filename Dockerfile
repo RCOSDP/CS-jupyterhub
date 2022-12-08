@@ -21,7 +21,7 @@
 # your jupyterhub_config.py will be added automatically
 # from your docker directory.
 
-ARG BASE_IMAGE=ubuntu:focal-20200729
+ARG BASE_IMAGE=ubuntu:22.04
 FROM $BASE_IMAGE AS builder
 
 USER root
@@ -35,12 +35,14 @@ RUN apt-get update \
     python3-dev \
     python3-pip \
     python3-pycurl \
+    python3-venv \
     nodejs \
     npm \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/*
 
-RUN python3 -m pip install --upgrade setuptools pip wheel
+RUN python3 -m pip install --upgrade setuptools pip build wheel
+RUN npm install --global yarn
 
 # copy everything except whats in .dockerignore, its a
 # compromise between needing to rebuild and maintaining
@@ -50,7 +52,7 @@ WORKDIR /src/jupyterhub
 
 # Build client component packages (they will be copied into ./share and
 # packaged with the built wheel.)
-RUN python3 setup.py bdist_wheel
+RUN python3 -m build --wheel
 RUN python3 -m pip wheel --wheel-dir wheelhouse dist/*.whl
 
 

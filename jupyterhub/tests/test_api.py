@@ -4,32 +4,30 @@ import json
 import re
 import sys
 import uuid
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 from unittest import mock
-from urllib.parse import quote
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
+from urllib.parse import quote, urlparse, urlunparse
 
-from pytest import fixture
-from pytest import mark
+from pytest import fixture, mark
 from tornado.httputil import url_concat
 
 import jupyterhub
+
 from .. import orm
 from ..apihandlers.base import PAGINATION_MEDIA_TYPE
 from ..objects import Server
 from ..utils import url_path_join as ujoin
 from ..utils import utcnow
 from .conftest import new_username
-from .mocking import public_host
-from .mocking import public_url
-from .utils import add_user
-from .utils import api_request
-from .utils import async_requests
-from .utils import auth_header
-from .utils import find_user
-
+from .utils import (
+    add_user,
+    api_request,
+    async_requests,
+    auth_header,
+    find_user,
+    public_host,
+    public_url,
+)
 
 # --------------------
 # Authentication tests
@@ -277,6 +275,18 @@ async def test_get_users(app):
         'roles': ['user'],
         'auth_state': None,
     }
+    print([
+        fill_user(
+            {
+                'name': 'admin',
+                'admin': True,
+                'roles': ['admin', 'user'],
+                'auth_state': None,
+                'mail_address': None,
+            }
+        ),
+        fill_user(user_model),
+    ])
     assert users == [
         fill_user(
             {
@@ -284,6 +294,7 @@ async def test_get_users(app):
                 'admin': True,
                 'roles': ['admin', 'user'],
                 'auth_state': None,
+                'mail_address': None,
             }
         ),
         fill_user(user_model),
@@ -1424,6 +1435,17 @@ async def test_get_proxy(app):
     r.raise_for_status()
     reply = r.json()
     assert list(reply.keys()) == [app.hub.routespec]
+
+
+@mark.parametrize("offset", (0, 1))
+async def test_get_proxy_pagination(app, offset):
+    r = await api_request(
+        app, f'proxy?offset={offset}', headers={"Accept": PAGINATION_MEDIA_TYPE}
+    )
+    r.raise_for_status()
+    reply = r.json()
+    assert set(reply) == {"items", "_pagination"}
+    assert list(reply["items"].keys()) == [app.hub.routespec][offset:]
 
 
 async def test_cookie(app):

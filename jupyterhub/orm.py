@@ -3,52 +3,43 @@
 # Distributed under the terms of the Modified BSD License.
 import enum
 import json
-import warnings
-from base64 import decodebytes
-from base64 import encodebytes
-from datetime import datetime
-from datetime import timedelta
+from base64 import decodebytes, encodebytes
+from datetime import datetime, timedelta
 
 import alembic.command
 import alembic.config
 from alembic.script import ScriptDirectory
-from sqlalchemy import Boolean
-from sqlalchemy import Column
-from sqlalchemy import create_engine
-from sqlalchemy import DateTime
-from sqlalchemy import event
-from sqlalchemy import exc
-from sqlalchemy import ForeignKey
-from sqlalchemy import inspect
-from sqlalchemy import Integer
-from sqlalchemy import MetaData
-from sqlalchemy import or_
-from sqlalchemy import select
-from sqlalchemy import Table
-from sqlalchemy import Unicode
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    MetaData,
+    Table,
+    Unicode,
+    create_engine,
+    event,
+    exc,
+    inspect,
+    or_,
+    select,
+)
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import backref
-from sqlalchemy.orm import interfaces
-from sqlalchemy.orm import object_session
-from sqlalchemy.orm import relationship
-from sqlalchemy.orm import Session
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.orm import validates
+from sqlalchemy.orm import (
+    Session,
+    backref,
+    interfaces,
+    object_session,
+    relationship,
+    sessionmaker,
+    validates,
+)
 from sqlalchemy.pool import StaticPool
-from sqlalchemy.sql.expression import bindparam
-from sqlalchemy.types import LargeBinary
-from sqlalchemy.types import Text
-from sqlalchemy.types import TypeDecorator
+from sqlalchemy.types import LargeBinary, Text, TypeDecorator
 from tornado.log import app_log
 
-from .roles import assign_default_roles
-from .roles import create_role
-from .roles import get_default_roles
-from .roles import update_roles
-from .utils import compare_token
-from .utils import hash_token
-from .utils import new_token
-from .utils import random_port
+from .utils import compare_token, hash_token, new_token, random_port
 
 # top-level variable for easier mocking in tests
 utcnow = datetime.utcnow
@@ -111,7 +102,9 @@ class JSONList(JSONDict):
         return value
 
     def process_result_value(self, value, dialect):
-        if value is not None:
+        if value is None:
+            return []
+        else:
             value = json.loads(value)
         return value
 
@@ -158,9 +151,6 @@ for has_role in (
     'user',
     'group',
     'service',
-    'api_token',
-    'oauth_client',
-    'oauth_code',
 ):
     role_map = Table(
         f'{has_role}_role_map',
@@ -186,10 +176,9 @@ class Role(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     name = Column(Unicode(255), unique=True)
     description = Column(Unicode(1023))
-    scopes = Column(JSONList)
+    scopes = Column(JSONList, default=[])
     users = relationship('User', secondary='user_role_map', backref='roles')
     services = relationship('Service', secondary='service_role_map', backref='roles')
-    tokens = relationship('APIToken', secondary='api_token_role_map', backref='roles')
     groups = relationship('Group', secondary='group_role_map', backref='roles')
 
     def __repr__(self):
@@ -603,6 +592,10 @@ class APIToken(Hashed, Base):
     def api_id(self):
         return 'a%i' % self.id
 
+    @property
+    def owner(self):
+        return self.user or self.service
+
     # added in 2.0
     client_id = Column(
         Unicode(255),
@@ -630,6 +623,7 @@ class APIToken(Hashed, Base):
     expires_at = Column(DateTime, default=None, nullable=True)
     last_activity = Column(DateTime)
     note = Column(Unicode(1023))
+    scopes = Column(JSONList, default=[])
 
     def __repr__(self):
         if self.user is not None:
@@ -682,14 +676,17 @@ class APIToken(Hashed, Base):
     def new(
         cls,
         token=None,
+        *,
         user=None,
         service=None,
         roles=None,
+        scopes=None,
         note='',
         generated=True,
         session_id=None,
         expires_in=None,
-        client_id='jupyterhub',
+        client_id=None,
+        oauth_client=None,
         return_orm=False,
     ):
         """Generate a new API token for a user or service"""
@@ -703,6 +700,54 @@ class APIToken(Hashed, Base):
             generated = True
         else:
             cls.check_token(db, token)
+
+        # avoid circular import
+        from .roles import roles_to_scopes
+
+        if scopes is not None and roles is not None:
+            raise ValueError(
+                "Can only assign one of scopes or roles when creating tokens."
+            )
+
+        elif scopes is None and roles is None:
+            # this is the default branch
+            # use the default 'token' role to specify default permissions for API tokens
+            default_token_role = Role.find(db, 'token')
+            if not default_token_role:
+                scopes = ["inherit"]
+            else:
+                scopes = roles_to_scopes([default_token_role])
+        elif roles is not None:
+            # evaluate roles to scopes immediately
+            # TODO: should this be deprecated, or not?
+            # warnings.warn(
+            #     "Setting roles on tokens is deprecated in JupyterHub 3.0. Use scopes.",
+            #     DeprecationWarning,
+            #     stacklevel=3,
+            # )
+            orm_roles = []
+            for rolename in roles:
+                role = Role.find(db, name=rolename)
+                if role is None:
+                    raise ValueError(f"No such role: {rolename}")
+                orm_roles.append(role)
+            scopes = roles_to_scopes(orm_roles)
+
+        if oauth_client is None:
+            # lookup oauth client by identifier
+            if client_id is None:
+                # default: global 'jupyterhub' client
+                client_id = "jupyterhub"
+            oauth_client = db.query(OAuthClient).filter_by(identifier=client_id).one()
+        if client_id is None:
+            client_id = oauth_client.identifier
+
+        # avoid circular import
+        from .scopes import _check_scopes_exist, _check_token_scopes
+
+        _check_scopes_exist(scopes, who_for="token")
+        _check_token_scopes(scopes, owner=user or service, oauth_client=oauth_client)
+
         # two stages to ensure orm_token.generated has been set
         # before token setter is called
         orm_token = cls(
@@ -710,6 +755,7 @@ class APIToken(Hashed, Base):
             note=note or '',
             client_id=client_id,
             session_id=session_id,
+            scopes=list(scopes),
         )
         orm_token.token = token
         if user:
@@ -722,20 +768,18 @@ class APIToken(Hashed, Base):
             orm_token.expires_at = cls.now() + timedelta(seconds=expires_in)
 
         db.add(orm_token)
-        if not Role.find(db, 'token'):
-            raise RuntimeError("Default token role has not been created")
-        try:
-            if roles is not None:
-                update_roles(db, entity=orm_token, roles=roles)
-            else:
-                assign_default_roles(db, entity=orm_token)
-        except Exception:
-            db.delete(orm_token)
-            db.commit()
-            raise
-
         db.commit()
         return token
+
+    def update_scopes(self, new_scopes):
+        """Set new scopes, checking that they are allowed"""
+        from .scopes import _check_scopes_exist, _check_token_scopes
+
+        _check_scopes_exist(new_scopes, who_for="token")
+        _check_token_scopes(
+            new_scopes, owner=self.owner, oauth_client=self.oauth_client
+        )
+        self.scopes = new_scopes
 
 
 class OAuthCode(Expiring, Base):
@@ -752,7 +796,7 @@ class OAuthCode(Expiring, Base):
     # state = Column(Unicode(1023))
     user_id = Column(Integer, ForeignKey('users.id', ondelete='CASCADE'))
 
-    roles = relationship('Role', secondary='oauth_code_role_map')
+    scopes = Column(JSONList, default=[])
 
     @staticmethod
     def now():
@@ -790,9 +834,9 @@ class OAuthClient(Base):
     )
     codes = relationship(OAuthCode, backref='client', cascade='all, delete-orphan')
 
-    # these are the roles an oauth client is allowed to request
-    # *not* the roles of the client itself
-    allowed_roles = relationship('Role', secondary='oauth_client_role_map')
+    # these are the scopes an oauth client is allowed to request
+    # *not* the scopes of the client itself
+    allowed_scopes = Column(JSONList, default=[])
 
     def __repr__(self):
         return f"<{self.__class__.__name__}(identifier={self.identifier!r})>"
@@ -959,7 +1003,6 @@ def check_db_revision(engine):
     ).first()[0]
     if alembic_revision == head:
         app_log.debug("database schema version found: %s", alembic_revision)
-        pass
     else:
         raise DatabaseSchemaMismatch(
             "Found database schema version {found} != {head}. "

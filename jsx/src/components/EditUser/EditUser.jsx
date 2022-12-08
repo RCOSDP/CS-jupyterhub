@@ -29,7 +29,7 @@ const EditUser = (props) => {
   var { username, mail_address, has_admin } = props.location.state;
 
   var [updatedUsername, setUpdatedUsername] = useState(""),
-    [updatedMailAddress, setUpdatesMailAddress] = useState(mail_address),
+      [updatedMailAddress, setUpdatesMailAddress] = useState(mail_address),
     [admin, setAdmin] = useState(has_admin);
 
   return (
@@ -86,6 +86,7 @@ const EditUser = (props) => {
                       }}
                     >{mail_address}</textarea>
                     <br/>
+                    <br></br>
                     <input
                       className="form-check-input"
                       checked={admin}
@@ -141,11 +142,11 @@ const EditUser = (props) => {
                       return;
                     } else if (updatedUsername != "" || updatedMailAddress != mail_address) {
                       if (
-                          (updatedUsername == "" ||
+                        (updatedUsername == "" ||
                         updatedUsername.length > 2 &&
                         /[!@#$%^&*(),.?":{}|<>]/g.test(updatedUsername) == false) &&
-                          (updatedMailAddress == mail_address || updatedMailAddress.match(/^\S+\@\S+$/) != null
-                          )
+                        (updatedMailAddress == mail_address || updatedMailAddress.match(/^\S+\@\S+$/) != null
+                       )
                       ) {
                         editUser(
                           username,

@@ -16,10 +16,7 @@ import os
 import sys
 from urllib.parse import urlparse
 
-from tornado import httpserver
-from tornado import ioloop
-from tornado import log
-from tornado import web
+from tornado import httpserver, ioloop, log, web
 from tornado.options import options
 
 from ..utils import make_ssl_context
@@ -50,7 +47,11 @@ def main():
     ca = os.environ.get('JUPYTERHUB_SSL_CLIENT_CA') or ''
 
     if key and cert and ca:
-        ssl_context = make_ssl_context(key, cert, cafile=ca, check_hostname=False)
+        import ssl
+
+        ssl_context = make_ssl_context(
+            key, cert, cafile=ca, purpose=ssl.Purpose.CLIENT_AUTH
+        )
         assert url.scheme == "https"
 
     server = httpserver.HTTPServer(app, ssl_options=ssl_context)

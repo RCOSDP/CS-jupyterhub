@@ -23,31 +23,32 @@ import signal
 import time
 from functools import wraps
 from subprocess import Popen
-from urllib.parse import quote
+from urllib.parse import quote, urlparse
 from weakref import WeakKeyDictionary
 
-from tornado.httpclient import AsyncHTTPClient
-from tornado.httpclient import HTTPError
-from tornado.httpclient import HTTPRequest
+from tornado.httpclient import AsyncHTTPClient, HTTPError, HTTPRequest
 from tornado.ioloop import PeriodicCallback
-from traitlets import Any
-from traitlets import Bool
-from traitlets import default
-from traitlets import Dict
-from traitlets import Instance
-from traitlets import Integer
-from traitlets import observe
-from traitlets import Unicode
+from traitlets import (
+    Any,
+    Bool,
+    CaselessStrEnum,
+    Dict,
+    Instance,
+    Integer,
+    TraitError,
+    Unicode,
+    default,
+    observe,
+    validate,
+)
 from traitlets.config import LoggingConfigurable
 
-from . import utils
-from .metrics import CHECK_ROUTES_DURATION_SECONDS
-from .metrics import PROXY_POLL_DURATION_SECONDS
-from .objects import Server
-from .utils import AnyTimeoutError
-from .utils import exponential_backoff
-from .utils import url_path_join
 from jupyterhub.traitlets import Command
+
+from . import utils
+from .metrics import CHECK_ROUTES_DURATION_SECONDS, PROXY_POLL_DURATION_SECONDS
+from .objects import Server
+from .utils import AnyTimeoutError, exponential_backoff, url_escape_path, url_path_join
 
 
 def _one_at_a_time(method):
@@ -122,7 +123,8 @@ class Proxy(LoggingConfigurable):
     )
 
     extra_routes = Dict(
-        {},
+        key_trait=Unicode(),
+        value_trait=Unicode(),
         config=True,
         help="""
         Additional routes to be maintained in the proxy.
@@ -140,6 +142,51 @@ class Proxy(LoggingConfigurable):
         Helpful when the hub is running in API-only mode.
         """,
     )
+
+    @validate("extra_routes")
+    def _validate_extra_routes(self, proposal):
+        extra_routes = {}
+        # check routespecs for leading/trailing slashes
+        for routespec, target in proposal.value.items():
+            if not isinstance(routespec, str):
+                raise TraitError(
+                    f"Proxy.extra_routes keys must be str, got {routespec!r}"
+                )
+            if not isinstance(target, str):
+                raise TraitError(
+                    f"Proxy.extra_routes values must be str, got {target!r}"
+                )
+            if not routespec.endswith("/"):
+                # trailing / is unambiguous, so we can add it
+                self.log.warning(
+                    f"Adding missing trailing '/' to c.Proxy.extra_routes {routespec} -> {routespec}/"
+                )
+                routespec += "/"
+
+            if self.app.subdomain_host:
+                # subdomain routing must _not_ start with /
+                if routespec.startswith("/"):
+                    raise ValueError(
+                        f"Proxy.extra_routes missing host component in {routespec} (must not have leading '/') when using `JupyterHub.subdomain_host = {self.app.subdomain_host!r}`"
+                    )
+
+            else:
+                # no subdomains, must start with /
+                # this is ambiguous with host routing, so raise instead of warn
+                if not routespec.startswith("/"):
+                    raise ValueError(
+                        f"Proxy.extra_routes routespec {routespec} missing leading '/'."
+                    )
+
+            # validate target URL?
+            target_url = urlparse(target.lower())
+            if target_url.scheme not in {"http", "https"} or not target_url.netloc:
+                raise ValueError(
+                    f"Proxy.extra_routes target {routespec}={target!r} doesn't look like a URL (should have http[s]://...)"
+                )
+            extra_routes[routespec] = target
+
+        return extra_routes
 
     def start(self):
         """Start the proxy.
@@ -203,14 +250,12 @@ class Proxy(LoggingConfigurable):
         The proxy implementation should also have a way to associate the fact that a
         route came from JupyterHub.
         """
-        pass
 
     async def delete_route(self, routespec):
         """Delete a route with a given routespec if it exists.
 
         **Subclasses must define this method**
         """
-        pass
 
     async def get_all_routes(self):
         """Fetch and return all the routes associated by JupyterHub from the
@@ -227,7 +272,6 @@ class Proxy(LoggingConfigurable):
             'data': the attached data dict for this route (as specified in add_route)
           }
         """
-        pass
 
     async def get_route(self, routespec):
         """Return the route info for a given routespec.
@@ -306,7 +350,9 @@ class Proxy(LoggingConfigurable):
         """Remove a user's server from the proxy table."""
         routespec = user.proxy_spec
         if server_name:
-            routespec = url_path_join(user.proxy_spec, server_name, '/')
+            routespec = url_path_join(
+                user.proxy_spec, url_escape_path(server_name), '/'
+            )
         self.log.info("Removing user %s from proxy (%s)", user.name, routespec)
         await self.delete_route(routespec)
 
@@ -475,7 +521,21 @@ class ConfigurableHTTPProxy(Proxy):
     def _concurrency_changed(self, change):
         self.semaphore = asyncio.BoundedSemaphore(change.new)
 
+    # https://github.com/jupyterhub/configurable-http-proxy/blob/4.5.1/bin/configurable-http-proxy#L92
+    log_level = CaselessStrEnum(
+        ["debug", "info", "warn", "error"],
+        "info",
+        help="Proxy log level",
+        config=True,
+    )
+
     debug = Bool(False, help="Add debug-level logging to the Proxy.", config=True)
+
+    @observe('debug')
+    def _debug_changed(self, change):
+        if change.new:
+            self.log_level = "debug"
+
     auth_token = Unicode(
         help="""The Proxy auth token
 
@@ -620,7 +680,6 @@ class ConfigurableHTTPProxy(Proxy):
             os.remove(self.pid_file)
         except FileNotFoundError:
             self.log.debug("PID file %s already removed", self.pid_file)
-            pass
 
     def _get_ssl_options(self):
         """List of cmd proxy options to use internal SSL"""
@@ -671,11 +730,11 @@ class ConfigurableHTTPProxy(Proxy):
             str(api_server.port),
             '--error-target',
             url_path_join(self.hub.url, 'error'),
+            '--log-level',
+            self.log_level,
         ]
         if self.app.subdomain_host:
             cmd.append('--host-routing')
-        if self.debug:
-            cmd.extend(['--log-level', 'debug'])
         if self.ssl_key:
             cmd.extend(['--ssl-key', self.ssl_key])
         if self.ssl_cert:
