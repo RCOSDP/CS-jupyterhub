@@ -73,7 +73,7 @@ const EditUser = (props) => {
                       }}
                     ></textarea>
                     <br/>
-                    <label for="mailAddressTextarea"> Mail Address </label>
+                    <label> Mail Address </label>
                     <br/>
                     <textarea
                       className="form-control"

@@ -21,7 +21,6 @@ import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
 import "./server-dashboard.css";
 import { timeSince } from "../../util/timeSince";
 import PaginationFooter from "../PaginationFooter/PaginationFooter";
-import { useEffect } from "react";
 
 const AccessServerButton = ({ url }) => (
   <a href={url || ""}>
@@ -404,143 +403,6 @@ const ServerDashboard = (props) => {
   };
 
   const ServerRowTable = ({ data }) => {
-    return (
-      <ReactObjectTableViewer
-        className="table-striped table-bordered"
-        style={{
-          padding: "3px 6px",
-          margin: "auto",
-        }}
-        keyStyle={{
-          padding: "4px",
-        }}
-        valueStyle={{
-          padding: "4px",
-        }}
-        data={data}
-      />
-    );
-  };
-
-  const serverRow = (user, server) => {
-    const { servers, ...userNoServers } = user;
-    const serverNameDash = server.name ? `-${server.name}` : "";
-    const userServerName = user.name + serverNameDash;
-    const open = collapseStates[userServerName] || false;
-    return [
-      <tr key={`${userServerName}-row`} className="user-row">
-        <td data-testid="user-row-name">
-          <span>
-            <Button
-              onClick={() =>
-                setCollapseStates({
-                  ...collapseStates,
-                  [userServerName]: !open,
-                })
-              }
-              aria-controls={`${userServerName}-collapse`}
-              aria-expanded={open}
-              data-testid={`${userServerName}-collapse-button`}
-              variant={open ? "secondary" : "primary"}
-              size="sm"
-            >
-              <span className="caret"></span>
-            </Button>{" "}
-          </span>
-          <span data-testid={`user-name-div-${userServerName}`}>
-            {user.name}
-          </span>
-        </td>
-        <td data-testid="user-row-admin">{user.admin ? "admin" : ""}</td>
-        <td data-testid="user-row-mail">
-          {!server.name && user.mail_address ? (
-            <>
-              <input
-                type="checkbox"
-                className="mail-address-checkbox"
-                style={{ marginRight: "10px" }}
-                value={user.name}
-                onChange={CheckedMail}
-                checked={checkedUsers.includes(user.name)}
-              />
-              {user.mail_address}
-            </>
-          ) : (
-            <>-</>
-          )}
-        </td>
-        <td data-testid="user-row-server">
-          {server.name ? (
-            <p className="text-secondary">{server.name}</p>
-          ) : (
-            <p style={{ color: "lightgrey" }}>[MAIN]</p>
-          )}
-        </td>
-        <td data-testid="user-row-last-activity">
-          {server.last_activity ? timeSince(server.last_activity) : "Never"}
-        </td>
-        <td data-testid="user-row-server-activity">
-          {server.started ? (
-            // Stop Single-user server
-            <>
-              <StopServerButton serverName={server.name} userName={user.name} />
-              <AccessServerButton url={server.url} />
-            </>
-          ) : (
-            // Start Single-user server
-            <>
-              <StartServerButton
-                serverName={server.name}
-                userName={user.name}
-                style={{ marginRight: 20 }}
-              />
-              <a
-                href={
-                  base_url +
-                  "spawn/" +
-                  user.name +
-                  (server.name ? "/" + server.name : "")
-                }
-              >
-                <button
-                  className="btn btn-secondary btn-xs"
-                  style={{ marginRight: 20 }}
-                >
-                  Spawn Page
-                </button>
-              </a>
-            </>
-          )}
-        </td>
-        <EditUserCell user={user} />
-      </tr>,
-      <tr>
-        <td
-          colSpan={6}
-          style={{ padding: 0 }}
-          data-testid={`${userServerName}-td`}
-        >
-          <Collapse in={open} data-testid={`${userServerName}-collapse`}>
-            <CardGroup
-              id={`${userServerName}-card-group`}
-              style={{ width: "100%", margin: "0 auto", float: "none" }}
-            >
-              <Card style={{ width: "100%", padding: 3, margin: "0 auto" }}>
-                <Card.Title>User</Card.Title>
-                <ServerRowTable data={userNoServers} />
-              </Card>
-              <Card style={{ width: "100%", padding: 3, margin: "0 auto" }}>
-                <Card.Title>Server</Card.Title>
-                <ServerRowTable data={server} />
-              </Card>
-            </CardGroup>
-          </Collapse>
-        </td>
-      </tr>,
-    ];
-  };
-
-  const ServerRowTable = ({ data }) => {
     const sortedData = Object.keys(data)
       .sort()
       .reduce(function (result, key) {
@@ -608,7 +470,23 @@ const ServerDashboard = (props) => {
           </span>
         </td>
         <td data-testid="user-row-admin">{user.admin ? "admin" : ""}</td>
-
+        <td data-testid="user-row-mail">
+          {!server.name && user.mail_address ? (
+            <>
+              <input
+                type="checkbox"
+                className="mail-address-checkbox"
+                style={{ marginRight: "10px" }}
+                value={user.name}
+                onChange={CheckedMail}
+                checked={checkedUsers.includes(user.name)}
+              />
+              {user.mail_address}
+            </>
+          ) : (
+            <>-</>
+          )}
+        </td>
         <td data-testid="user-row-server">
           <p className="text-secondary">{server.name}</p>
         </td>

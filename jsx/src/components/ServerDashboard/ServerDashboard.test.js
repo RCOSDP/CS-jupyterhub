@@ -600,14 +600,6 @@ test("Search for user calls updateUsers with name filter", async () => {
 
   userEvent.type(search, "a");
   expect(search.value).toEqual("a");
-  userEvent.type(search, "a");
-  expect(search.value).toEqual("a");
-  clock.tick(400);
-  expect(mockUpdateUsers.mock.calls[1][2]).toEqual("a");
-  expect(mockUpdateUsers.mock.calls).toHaveLength(2);
-
-  userEvent.type(search, "b");
-  expect(search.value).toEqual("ab");
   clock.tick(400);
   expect(mockReducers.mock.calls).toHaveLength(3);
   var lastState =
@@ -656,6 +648,4 @@ test("Interacting with PaginationFooter causes state update and refresh via useE
   // unclear how to fix this.
   // expect(callbackSpy.mock.calls).toHaveLength(2);
   // expect(callbackSpy).toHaveBeenCalledWith(2, 2, "");
-  expect(mockUpdateUsers.mock.calls[2][2]).toEqual("ab");
-  expect(mockUpdateUsers.mock.calls).toHaveLength(3);
 });
