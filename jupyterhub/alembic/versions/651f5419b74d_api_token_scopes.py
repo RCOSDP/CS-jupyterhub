@@ -1,13 +1,13 @@
 """api_token_scopes
 
 Revision ID: 651f5419b74d
-Revises: 833da8570507
+Revises: d0478c54bfea
 Create Date: 2022-02-28 12:42:55.149046
 
 """
 # revision identifiers, used by Alembic.
 revision = '651f5419b74d'
-down_revision = '833da8570507'
+down_revision = 'd0478c54bfea'
 branch_labels = None
 depends_on = None
 
