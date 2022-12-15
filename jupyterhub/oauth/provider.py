@@ -566,11 +566,13 @@ class JupyterHubRequestValidator(RequestValidator):
         requested_scopes = set(scopes)
         # explicitly allow 'identify', which was the only allowed scope previously
         # requesting 'identify' gets no actual permissions other than self-identification
-        if "identify" in requested_scopes:
-            app_log.warning(
-                f"Ignoring deprecated 'identify' scope, requested by {client_id}"
-            )
-            requested_scopes.discard("identify")
+        for deprecated_scope in ['identity', 'identify']:
+            if deprecated_scope in requested_scopes:
+                app_log.warning(
+                    f"Ignoring deprecated '{deprecated_scope}' scope, requested by {client_id}"
+                )
+                requested_scopes.discard(deprecated_scope)
+
 
         # TODO: handle roles->scopes transition
         # In 2.x, `?scopes=` only accepted _role_ names,
