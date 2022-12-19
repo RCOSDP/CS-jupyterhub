@@ -1,6 +1,6 @@
-import React, { useState } from "react";
-import regeneratorRuntime from "regenerator-runtime";
+import React, { useEffect, useState } from "react";
 import { useSelector, useDispatch } from "react-redux";
+import { debounce } from "lodash";
 import PropTypes from "prop-types";
 
 import {
@@ -21,7 +21,6 @@ import { FaSort, FaSortUp, FaSortDown } from "react-icons/fa";
 import "./server-dashboard.css";
 import { timeSince } from "../../util/timeSince";
 import PaginationFooter from "../PaginationFooter/PaginationFooter";
-import { useEffect } from "react";
 
 const AccessServerButton = ({ url }) => (
   <a href={url || ""}>
@@ -32,7 +31,7 @@ const AccessServerButton = ({ url }) => (
 );
 
 const ServerDashboard = (props) => {
-  let base_url = window.base_url;
+  let base_url = window.base_url || "/";
   // sort methods
   var usernameDesc = (e) => e.sort((a, b) => (a.name > b.name ? 1 : -1)),
     usernameAsc = (e) => e.sort((a, b) => (a.name < b.name ? 1 : -1)),
@@ -42,11 +41,11 @@ const ServerDashboard = (props) => {
     mailAsc = (e) => e.sort((a) => (a.mail ? 1 : -1)),
     dateDesc = (e) =>
       e.sort((a, b) =>
-        new Date(a.last_activity) - new Date(b.last_activity) > 0 ? -1 : 1
+        new Date(a.last_activity) - new Date(b.last_activity) > 0 ? -1 : 1,
       ),
     dateAsc = (e) =>
       e.sort((a, b) =>
-        new Date(a.last_activity) - new Date(b.last_activity) > 0 ? 1 : -1
+        new Date(a.last_activity) - new Date(b.last_activity) > 0 ? 1 : -1,
       ),
     runningAsc = (e) => e.sort((a) => (a.server == null ? -1 : 1)),
     runningDesc = (e) => e.sort((a) => (a.server == null ? 1 : -1));
@@ -54,19 +53,18 @@ const ServerDashboard = (props) => {
   var [errorAlert, setErrorAlert] = useState(null);
   var [sortMethod, setSortMethod] = useState(null);
   var [disabledButtons, setDisabledButtons] = useState({});
-  const [collapseStates, setCollapseStates] = useState({});
+  var [collapseStates, setCollapseStates] = useState({});
   const [show, setShow] = useState(false);
   const handleClose = () => setShow(false);
   const handleShow = () => setShow(true);
 
   var user_data = useSelector((state) => state.user_data),
     user_page = useSelector((state) => state.user_page),
-    limit = useSelector((state) => state.limit),
-    name_filter = useSelector((state) => state.name_filter),
-    page = parseInt(new URLSearchParams(props.location.search).get("page"));
+    name_filter = useSelector((state) => state.name_filter);
 
-  page = isNaN(page) ? 0 : page;
-  var slice = [page * limit, limit, name_filter];
+  var offset = user_page ? user_page.offset : 0;
+  var limit = user_page ? user_page.limit : window.api_page_limit;
+  var total = user_page ? user_page.total : undefined;
 
   const dispatch = useDispatch();
   const [checkedUsers, setCheckedUsers] = useState([]);
@@ -114,12 +112,29 @@ const ServerDashboard = (props) => {
     sendNotification,
   } = props;
 
-  var dispatchPageUpdate = (data, page, name_filter) => {
+  const dispatchPageUpdate = (data, page) => {
     dispatch({
       type: "USER_PAGE",
       value: {
         data: data,
         page: page,
+      },
+    });
+  };
+
+  const setOffset = (newOffset) => {
+    dispatch({
+      type: "USER_OFFSET",
+      value: {
+        offset: newOffset,
+      },
+    });
+  };
+
+  const setNameFilter = (name_filter) => {
+    dispatch({
+      type: "USER_NAME_FILTER",
+      value: {
         name_filter: name_filter,
       },
     });
@@ -257,19 +272,20 @@ const ServerDashboard = (props) => {
       </Modal>
     );
   };
+  useEffect(() => {
+    updateUsers(offset, limit, name_filter)
+      .then((data) => dispatchPageUpdate(data.items, data._pagination))
+      .catch((err) => setErrorAlert("Failed to update user list."));
+  }, [offset, limit, name_filter]);
 
-  if (page != user_page) {
-    updateUsers(...slice).then((data) =>
-      dispatchPageUpdate(data, page, name_filter)
-    );
+  if (!user_data || !user_page) {
+    return <div data-testid="no-show"></div>;
   }
 
-  var debounce = require("lodash.debounce");
+  var slice = [offset, limit, name_filter];
+
   const handleSearch = debounce(async (event) => {
-    // setNameFilter(event.target.value);
-    updateUsers(page * limit, limit, event.target.value).then((data) =>
-      dispatchPageUpdate(data, page, name_filter)
-    );
+    setNameFilter(event.target.value);
   }, 300);
 
   if (sortMethod != null) {
@@ -297,7 +313,11 @@ const ServerDashboard = (props) => {
               if (res.status < 300) {
                 updateUsers(...slice)
                   .then((data) => {
-                    dispatchPageUpdate(data, page, name_filter);
+                    dispatchPageUpdate(
+                      data.items,
+                      data._pagination,
+                      name_filter,
+                    );
                   })
                   .catch(() => {
                     setIsDisabled(false);
@@ -333,7 +353,11 @@ const ServerDashboard = (props) => {
               if (res.status < 300) {
                 updateUsers(...slice)
                   .then((data) => {
-                    dispatchPageUpdate(data, page, name_filter);
+                    dispatchPageUpdate(
+                      data.items,
+                      data._pagination,
+                      name_filter,
+                    );
                   })
                   .catch(() => {
                     setErrorAlert(`Failed to update users list.`);
@@ -379,6 +403,25 @@ const ServerDashboard = (props) => {
   };
 
   const ServerRowTable = ({ data }) => {
+    const sortedData = Object.keys(data)
+      .sort()
+      .reduce(function (result, key) {
+        let value = data[key];
+        switch (key) {
+          case "last_activity":
+          case "created":
+          case "started":
+            // format timestamps
+            value = value ? timeSince(value) : value;
+            break;
+        }
+        if (Array.isArray(value)) {
+          // cast arrays (e.g. roles, groups) to string
+          value = value.sort().join(", ");
+        }
+        result[key] = value;
+        return result;
+      }, {});
     return (
       <ReactObjectTableViewer
         className="table-striped table-bordered"
@@ -392,7 +435,7 @@ const ServerDashboard = (props) => {
         valueStyle={{
           padding: "4px",
         }}
-        data={data}
+        data={sortedData}
       />
     );
   };
@@ -445,11 +488,7 @@ const ServerDashboard = (props) => {
           )}
         </td>
         <td data-testid="user-row-server">
-          {server.name ? (
-            <p className="text-secondary">{server.name}</p>
-          ) : (
-            <p style={{ color: "lightgrey" }}>[MAIN]</p>
-          )}
+          <p className="text-secondary">{server.name}</p>
         </td>
         <td data-testid="user-row-last-activity">
           {server.last_activity ? timeSince(server.last_activity) : "Never"}
@@ -470,12 +509,9 @@ const ServerDashboard = (props) => {
                 style={{ marginRight: 20 }}
               />
               <a
-                href={
-                  base_url +
-                  "spawn/" +
-                  user.name +
-                  (server.name ? "/" + server.name : "")
-                }
+                href={`${base_url}spawn/${user.name}${
+                  server.name ? "/" + server.name : ""
+                }`}
               >
                 <button
                   className="btn btn-secondary btn-xs"
@@ -673,7 +709,7 @@ const ServerDashboard = (props) => {
                               failedServers.length > 1 ? "servers" : "server"
                             }. ${
                               failedServers.length > 1 ? "Are they " : "Is it "
-                            } already running?`
+                            } already running?`,
                           );
                         }
                         return res;
@@ -681,10 +717,14 @@ const ServerDashboard = (props) => {
                       .then((res) => {
                         updateUsers(...slice)
                           .then((data) => {
-                            dispatchPageUpdate(data, page, name_filter);
+                            dispatchPageUpdate(
+                              data.items,
+                              data._pagination,
+                              name_filter,
+                            );
                           })
                           .catch(() =>
-                            setErrorAlert(`Failed to update users list.`)
+                            setErrorAlert(`Failed to update users list.`),
                           );
                         return res;
                       })
@@ -709,7 +749,7 @@ const ServerDashboard = (props) => {
                               failedServers.length > 1 ? "servers" : "server"
                             }. ${
                               failedServers.length > 1 ? "Are they " : "Is it "
-                            } already stopped?`
+                            } already stopped?`,
                           );
                         }
                         return res;
@@ -717,10 +757,14 @@ const ServerDashboard = (props) => {
                       .then((res) => {
                         updateUsers(...slice)
                           .then((data) => {
-                            dispatchPageUpdate(data, page, name_filter);
+                            dispatchPageUpdate(
+                              data.items,
+                              data._pagination,
+                              name_filter,
+                            );
                           })
                           .catch(() =>
-                            setErrorAlert(`Failed to update users list.`)
+                            setErrorAlert(`Failed to update users list.`),
                           );
                         return res;
                       })
@@ -745,11 +789,12 @@ const ServerDashboard = (props) => {
           </tbody>
         </table>
         <PaginationFooter
-          endpoint="/"
-          page={page}
+          offset={offset}
           limit={limit}
-          numOffset={slice[0]}
-          numElements={user_data.length}
+          visible={user_data.length}
+          total={total}
+          next={() => setOffset(offset + limit)}
+          prev={() => setOffset(offset - limit)}
         />
         <br></br>
       </div>

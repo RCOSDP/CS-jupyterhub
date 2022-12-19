@@ -30,6 +30,9 @@ env:
   LANG: C.UTF-8
   PYTEST_ADDOPTS: "--verbose --color=yes"
 
+permissions:
+  contents: read
+
 jobs:
   # Run "pytest jupyterhub/tests" in various configurations
   pytest:
@@ -53,9 +56,9 @@ jobs:
         #   Tests everything when JupyterHub works against a dedicated mysql or
         #   postgresql server.
         #
-        # nbclassic:
+        # legacy_notebook:
         #   Tests everything when the user instances are started with
-        #   notebook instead of jupyter_server.
+        #   the legacy notebook server instead of jupyter_server.
         #
         # ssl:
         #   Tests everything using internal SSL connections instead of
@@ -68,21 +71,25 @@ jobs:
         # NOTE: Since only the value of these parameters are presented in the
         #       GitHub UI when the workflow run, we avoid using true/false as
         #       values by instead duplicating the name to signal true.
+        # Python versions available at:
+        #   https://github.com/actions/python-versions/blob/HEAD/versions-manifest.json
         include:
-          - python: "3.6"
+          - python: "3.7"
             oldest_dependencies: oldest_dependencies
-            nbclassic: nbclassic
-          - python: "3.6"
-            subdomain: subdomain
-          - python: "3.7"
-            db: mysql
-          - python: "3.7"
-            ssl: ssl
+            legacy_notebook: legacy_notebook
           - python: "3.8"
-            db: postgres
-          - python: "3.8"
-            nbclassic: nbclassic
+            legacy_notebook: legacy_notebook
           - python: "3.9"
+            db: mysql
+          - python: "3.10"
+            db: postgres
+          - python: "3.11"
+            subdomain: subdomain
+          - python: "3.11"
+            ssl: ssl
+          - python: "3.11"
+            selenium: selenium
+          - python: "3.11"
             main_dependencies: main_dependencies
 
     steps:
@@ -110,29 +117,30 @@ jobs:
           if [ "${{ matrix.jupyter_server }}" != "" ]; then
               echo "JUPYTERHUB_SINGLEUSER_APP=jupyterhub.tests.mockserverapp.MockServerApp" >> $GITHUB_ENV
           fi
-      - uses: actions/checkout@v2
-      # NOTE: actions/setup-node@v1 make use of a cache within the GitHub base
+      - uses: actions/checkout@v3
+      # NOTE: actions/setup-node@v3 make use of a cache within the GitHub base
       #       environment and setup in a fraction of a second.
       - name: Install Node v14
-        uses: actions/setup-node@v1
+        uses: actions/setup-node@v3
         with:
           node-version: "14"
-      - name: Install Node dependencies
+      - name: Install Javascript dependencies
         run: |
           npm install
-          npm install -g configurable-http-proxy
+          npm install -g configurable-http-proxy yarn
           npm list
 
-      # NOTE: actions/setup-python@v2 make use of a cache within the GitHub base
+      # NOTE: actions/setup-python@v4 make use of a cache within the GitHub base
       #       environment and setup in a fraction of a second.
       - name: Install Python ${{ matrix.python }}
-        uses: actions/setup-python@v2
+        uses: actions/setup-python@v4
         with:
-          python-version: ${{ matrix.python }}
+          python-version: "${{ matrix.python }}"
+
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install --upgrade . -r dev-requirements.txt
+          pip install ".[test]"
 
           if [ "${{ matrix.oldest_dependencies }}" != "" ]; then
             # take any dependencies in requirements.txt such as tornado>=5.0
@@ -145,9 +153,9 @@ jobs:
           if [ "${{ matrix.main_dependencies }}" != "" ]; then
               pip install git+https://github.com/ipython/traitlets#egg=traitlets --force
           fi
-          if [ "${{ matrix.nbclassic }}" != "" ]; then
+          if [ "${{ matrix.legacy_notebook }}" != "" ]; then
               pip uninstall jupyter_server --yes
-              pip install notebook
+              pip install 'notebook<7'
           fi
           if [ "${{ matrix.db }}" == "mysql" ]; then
               pip install mysql-connector-python
@@ -198,20 +206,32 @@ jobs:
               DB=postgres bash ci/docker-db.sh
               DB=postgres bash ci/init-db.sh
           fi
+      - name: Setup Firefox
+        if: matrix.selenium
+        uses: browser-actions/setup-firefox@latest
+        with:
+          firefox-version: latest
+
+      - name: Setup Geckodriver
+        if: matrix.selenium
+        uses: browser-actions/setup-geckodriver@latest
+
+      - name: Configure selenium tests
+        if: matrix.selenium
+        run: echo "PYTEST_ADDOPTS=$PYTEST_ADDOPTS -m selenium" >> "${GITHUB_ENV}"
 
       - name: Run pytest
         run: |
           pytest --maxfail=2 --cov=jupyterhub jupyterhub/tests
-      - name: Submit codecov report
-        run: |
-          codecov
+
+      - uses: codecov/codecov-action@v3
 
   docker-build:
     runs-on: ubuntu-20.04
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v3
 
       - name: build images
         run: |

@@ -2,10 +2,15 @@
 
 Contains default notebook-app subclass and mixins
 """
-from .app import main
-from .app import SingleUserNotebookApp
-from .mixins import HubAuthenticatedHandler
-from .mixins import make_singleuser_app
+from .app import SingleUserNotebookApp, main
+from .mixins import HubAuthenticatedHandler, make_singleuser_app
+
+__all__ = [
+    "SingleUserNotebookApp",
+    "main",
+    "HubAuthenticatedHandler",
+    "make_singleuser_app",
+]
 
 # backward-compatibility
 JupyterHubLoginHandler = SingleUserNotebookApp.login_handler_class

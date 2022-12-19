@@ -3,15 +3,19 @@
 implements https://oauthlib.readthedocs.io/en/latest/oauth2/server.html
 """
 from oauthlib import uri_validate
-from oauthlib.oauth2 import RequestValidator
-from oauthlib.oauth2 import WebApplicationServer
-from oauthlib.oauth2.rfc6749.grant_types import authorization_code
-from oauthlib.oauth2.rfc6749.grant_types import base
+from oauthlib.oauth2 import RequestValidator, WebApplicationServer
+from oauthlib.oauth2.rfc6749.grant_types import authorization_code, base
 from tornado.log import app_log
 
 from .. import orm
-from ..utils import compare_token
-from ..utils import hash_token
+from ..roles import roles_to_scopes
+from ..scopes import (
+    _check_scopes_exist,
+    _resolve_requested_scopes,
+    access_scopes,
+    identify_scopes,
+)
+from ..utils import compare_token, hash_token
 
 # patch absolute-uri check
 # because we want to allow relative uri oauth
@@ -152,7 +156,12 @@ class JupyterHubRequestValidator(RequestValidator):
         )
         if orm_client is None:
             raise ValueError("No such client: %s" % client_id)
-        return [role.name for role in orm_client.allowed_roles]
+        scopes = set(orm_client.allowed_scopes)
+        if 'inherit' not in scopes:
+            # add identify-user scope
+            # and access-service scope
+            scopes |= identify_scopes() | access_scopes(orm_client)
+        return scopes
 
     def get_original_scopes(self, refresh_token, request, *args, **kwargs):
         """Get the list of scopes associated with the refresh token.
@@ -252,7 +261,7 @@ class JupyterHubRequestValidator(RequestValidator):
             code=code['code'],
             # oauth has 5 minutes to complete
             expires_at=int(orm.OAuthCode.now() + 300),
-            roles=request._jupyterhub_roles,
+            scopes=list(request.scopes),
             user=request.user.orm_user,
             redirect_uri=orm_client.redirect_uri,
             session_id=request.session_id,
@@ -347,9 +356,9 @@ class JupyterHubRequestValidator(RequestValidator):
 
         # APIToken.new commits the token to the db
         orm.APIToken.new(
-            client_id=client.identifier,
+            oauth_client=client,
             expires_in=token['expires_in'],
-            roles=[rolename for rolename in request.scopes],
+            scopes=request.scopes,
             token=token['access_token'],
             session_id=request.session_id,
             user=request.user,
@@ -451,7 +460,7 @@ class JupyterHubRequestValidator(RequestValidator):
             return False
         request.user = orm_code.user
         request.session_id = orm_code.session_id
-        request.scopes = [role.name for role in orm_code.roles]
+        request.scopes = orm_code.scopes
         return True
 
     def validate_grant_type(
@@ -537,7 +546,7 @@ class JupyterHubRequestValidator(RequestValidator):
     def validate_scopes(self, client_id, scopes, client, request, *args, **kwargs):
         """Ensure the client is authorized access to requested scopes.
         :param client_id: Unicode client identifier
-        :param scopes: List of scopes (defined by you)
+        :param scopes: List of 'raw' scopes (defined by you)
         :param client: Client object set by you, see authenticate_client.
         :param request: The HTTP Request (oauthlib.common.Request)
         :rtype: True or False
@@ -553,32 +562,69 @@ class JupyterHubRequestValidator(RequestValidator):
         if orm_client is None:
             app_log.warning("No such oauth client %s", client_id)
             return False
-        client_allowed_roles = {role.name: role for role in orm_client.allowed_roles}
+
+        requested_scopes = set(scopes)
         # explicitly allow 'identify', which was the only allowed scope previously
         # requesting 'identify' gets no actual permissions other than self-identification
-        client_allowed_roles.setdefault('identify', None)
+        for deprecated_scope in ['identity', 'identify']:
+            if deprecated_scope in requested_scopes:
+                app_log.warning(
+                    f"Ignoring deprecated '{deprecated_scope}' scope, requested by {client_id}"
+                )
+                requested_scopes.discard(deprecated_scope)
 
-        # Added for backward compatibility
-        client_allowed_roles.setdefault('identity', None)
-        roles = []
-        requested_roles = set(scopes)
-        disallowed_roles = requested_roles.difference(client_allowed_roles)
-        if disallowed_roles:
+
+        # TODO: handle roles->scopes transition
+        # In 2.x, `?scopes=` only accepted _role_ names,
+        # but in 3.0 we accept and prefer scopes.
+        # For backward-compatibility, we still accept both.
+        # Should roles be deprecated here, or kept as a convenience?
+        try:
+            _check_scopes_exist(requested_scopes)
+        except KeyError as e:
+            # scopes don't exist, maybe they are role names
+            requested_roles = list(
+                self.db.query(orm.Role).filter(orm.Role.name.in_(requested_scopes))
+            )
+            if len(requested_roles) != len(requested_scopes):
+                # did not find roles
+                app_log.warning(f"No such scopes: {requested_scopes}")
+                return False
+            app_log.info(
+                f"OAuth client {client_id} requesting roles: {requested_scopes}"
+            )
+            requested_scopes = roles_to_scopes(requested_roles)
+
+        client_allowed_scopes = set(orm_client.allowed_scopes)
+
+        # scope resolution only works if we have a user defined
+        user = request.user or getattr(self, "_current_user")
+
+        # always grant reading the token-owner's name
+        # and accessing the service itself
+        required_scopes = {*identify_scopes(), *access_scopes(orm_client)}
+        requested_scopes.update(required_scopes)
+        client_allowed_scopes.update(required_scopes)
+
+        allowed_scopes, disallowed_scopes = _resolve_requested_scopes(
+            requested_scopes,
+            client_allowed_scopes,
+            user=user.orm_user,
+            client=orm_client,
+            db=self.db,
+        )
+
+        if disallowed_scopes:
             app_log.error(
-                f"Role(s) not allowed for {client_id}: {','.join(disallowed_roles)}"
+                f"Scope(s) not allowed for {client_id}: {', '.join(disallowed_scopes)}"
             )
             return False
 
-        # store resolved roles on request
+        # store resolved scopes on request
         app_log.debug(
-            f"Allowing request for role(s) for {client_id}:  {','.join(requested_roles) or '[]'}"
+            f"Allowing request for scope(s) for {client_id}:  {','.join(requested_scopes) or '[]'}"
         )
-        # these will be stored on the OAuthCode object
-        request._jupyterhub_roles = [
-            client_allowed_roles[name]
-            for name in requested_roles
-            if client_allowed_roles[name] is not None
-        ]
+        request.scopes = requested_scopes
         return True
 
 
@@ -588,7 +634,12 @@ class JupyterHubOAuthServer(WebApplicationServer):
         super().__init__(validator, *args, **kwargs)
 
     def add_client(
-        self, client_id, client_secret, redirect_uri, allowed_roles=None, description=''
+        self,
+        client_id,
+        client_secret,
+        redirect_uri,
+        allowed_scopes=None,
+        description='',
     ):
         """Add a client
 
@@ -610,12 +661,12 @@ class JupyterHubOAuthServer(WebApplicationServer):
             app_log.info(f'Creating oauth client {client_id}')
         else:
             app_log.info(f'Updating oauth client {client_id}')
-        if allowed_roles == None:
-            allowed_roles = []
+        if allowed_scopes == None:
+            allowed_scopes = []
         orm_client.secret = hash_token(client_secret) if client_secret else ""
         orm_client.redirect_uri = redirect_uri
         orm_client.description = description or client_id
-        orm_client.allowed_roles = allowed_roles
+        orm_client.allowed_scopes = list(allowed_scopes)
         self.db.commit()
         return orm_client
 

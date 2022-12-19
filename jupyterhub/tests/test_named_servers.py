@@ -1,23 +1,19 @@
 """Tests for named servers"""
 import asyncio
 import json
+import time
 from unittest import mock
-from urllib.parse import urlencode
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlencode, urlparse
 
 import pytest
+from requests.exceptions import HTTPError
 from tornado.httputil import url_concat
 
-from ..utils import url_path_join
+from .. import orm
+from ..utils import url_escape_path, url_path_join
 from .mocking import FormSpawner
-from .mocking import public_url
-from .test_api import add_user
-from .test_api import api_request
-from .test_api import fill_user
-from .test_api import normalize_user
-from .test_api import TIMESTAMP
-from .utils import async_requests
-from .utils import get_page
+from .test_api import TIMESTAMP, add_user, api_request, fill_user, normalize_user
+from .utils import async_requests, get_page, public_url
 
 
 @pytest.fixture
@@ -25,6 +21,25 @@ def named_servers(app):
     with mock.patch.dict(
         app.tornado_settings,
         {'allow_named_servers': True, 'named_server_limit_per_user': 2},
+    ):
+        yield
+
+
+@pytest.fixture
+def named_servers_with_callable_limit(app):
+    def named_server_limit_per_user_fn(handler):
+        """Limit number of named servers to `2` for non-admin users. No limit for admin users."""
+        user = handler.current_user
+        if user and user.admin:
+            return 0
+        return 2
+
+    with mock.patch.dict(
+        app.tornado_settings,
+        {
+            'allow_named_servers': True,
+            'named_server_limit_per_user': named_server_limit_per_user_fn,
+        },
     ):
         yield
 
@@ -66,6 +81,7 @@ async def test_default_server(app, named_servers):
                     'url': user.url,
                     'pending': None,
                     'ready': True,
+                    'stopped': False,
                     'progress_url': 'PREFIX/hub/api/users/{}/server/progress'.format(
                         username
                     ),
@@ -90,28 +106,54 @@ async def test_default_server(app, named_servers):
     )
 
 
-async def test_create_named_server(app, named_servers):
+@pytest.mark.parametrize(
+    'servername,escapedname,caller_escape',
+    [
+        ('trevor', 'trevor', False),
+        ('$p~c|a! ch@rs', '%24p~c%7Ca%21%20ch@rs', False),
+        ('$p~c|a! ch@rs', '%24p~c%7Ca%21%20ch@rs', True),
+        ('hash#?question', 'hash%23%3Fquestion', True),
+    ],
+)
+async def test_create_named_server(
+    app, named_servers, servername, escapedname, caller_escape
+):
     username = 'walnut'
     user = add_user(app.db, app, name=username)
     # assert user.allow_named_servers == True
     cookies = await app.login_user(username)
-    servername = 'trevor'
-    r = await api_request(app, 'users', username, 'servers', servername, method='post')
+    request_servername = servername
+    if caller_escape:
+        request_servername = url_escape_path(servername)
+
+    r = await api_request(
+        app, 'users', username, 'servers', request_servername, method='post'
+    )
     r.raise_for_status()
     assert r.status_code == 201
     assert r.text == ''
 
-    url = url_path_join(public_url(app, user), servername, 'env')
+    url = url_path_join(public_url(app, user), request_servername, 'env')
+    expected_url = url_path_join(public_url(app, user), escapedname, 'env')
     r = await async_requests.get(url, cookies=cookies)
     r.raise_for_status()
-    assert r.url == url
+    # requests doesn't fully encode the servername: "$p~c%7Ca!%20ch@rs".
+    # Since this is the internal requests representation and not the JupyterHub
+    # representation it just needs to be equivalent.
+    assert unquote(r.url) == unquote(expected_url)
     env = r.json()
     prefix = env.get('JUPYTERHUB_SERVICE_PREFIX')
     assert prefix == user.spawners[servername].server.base_url
-    assert prefix.endswith(f'/user/{username}/{servername}/')
+    assert prefix.endswith(f'/user/{username}/{escapedname}/')
 
     r = await api_request(app, 'users', username)
     r.raise_for_status()
+
+    # Ensure the unescaped name is stored in the DB
+    db_server_names = set(
+        app.db.query(orm.User).filter_by(name=username).first().orm_spawners.keys()
+    )
+    assert db_server_names == {"", servername}
 
     user_model = normalize_user(r.json())
     assert user_model == fill_user(
@@ -124,11 +166,12 @@ async def test_create_named_server(app, named_servers):
                     'name': name,
                     'started': TIMESTAMP,
                     'last_activity': TIMESTAMP,
-                    'url': url_path_join(user.url, name, '/'),
+                    'url': url_path_join(user.url, escapedname, '/'),
                     'pending': None,
                     'ready': True,
+                    'stopped': False,
                     'progress_url': 'PREFIX/hub/api/users/{}/servers/{}/progress'.format(
-                        username, servername
+                        username, escapedname
                     ),
                     'state': {'pid': 0},
                     'user_options': {},
@@ -137,6 +180,26 @@ async def test_create_named_server(app, named_servers):
             },
         }
     )
+
+
+async def test_create_invalid_named_server(app, named_servers):
+    username = 'walnut'
+    user = add_user(app.db, app, name=username)
+    # assert user.allow_named_servers == True
+    cookies = await app.login_user(username)
+    server_name = "a$/b"
+    request_servername = 'a%24%2fb'
+
+    r = await api_request(
+        app, 'users', username, 'servers', request_servername, method='post'
+    )
+
+    with pytest.raises(HTTPError) as exc:
+        r.raise_for_status()
+    assert exc.value.response.json() == {
+        'status': 400,
+        'message': "Invalid server_name (may not contain '/'): a$/b",
+    }
 
 
 async def test_delete_named_server(app, named_servers):
@@ -246,6 +309,57 @@ async def test_named_server_limit(app, named_servers):
     r.raise_for_status()
     assert r.status_code == 201
     assert r.text == ''
+
+
+@pytest.mark.parametrize(
+    'username,admin',
+    [
+        ('nonsuperfoo', False),
+        ('superfoo', True),
+    ],
+)
+async def test_named_server_limit_as_callable(
+    app, named_servers_with_callable_limit, username, admin
+):
+    """Test named server limit based on `named_server_limit_per_user_fn` callable"""
+    user = add_user(app.db, app, name=username, admin=admin)
+    cookies = await app.login_user(username)
+
+    # Create 1st named server
+    servername1 = 'bar-1'
+    r = await api_request(
+        app, 'users', username, 'servers', servername1, method='post', cookies=cookies
+    )
+    r.raise_for_status()
+    assert r.status_code == 201
+    assert r.text == ''
+
+    # Create 2nd named server
+    servername2 = 'bar-2'
+    r = await api_request(
+        app, 'users', username, 'servers', servername2, method='post', cookies=cookies
+    )
+    r.raise_for_status()
+    assert r.status_code == 201
+    assert r.text == ''
+
+    # Create 3rd named server
+    servername3 = 'bar-3'
+    r = await api_request(
+        app, 'users', username, 'servers', servername3, method='post', cookies=cookies
+    )
+
+    # No named server limit for admin users as in `named_server_limit_per_user_fn` callable
+    if admin:
+        r.raise_for_status()
+        assert r.status_code == 201
+        assert r.text == ''
+    else:
+        assert r.status_code == 400
+        assert r.json() == {
+            "status": 400,
+            "message": f"User {username} already has the maximum of 2 named servers.  One must be deleted before a new server can be created",
+        }
 
 
 async def test_named_server_spawn_form(app, username, named_servers):
@@ -392,3 +506,61 @@ async def test_named_server_stop_server(app, username, named_servers):
     assert user.spawners[server_name].server is None
     assert user.spawners[''].server
     assert user.running
+
+
+@pytest.mark.parametrize(
+    "include_stopped_servers",
+    [True, False],
+)
+async def test_stopped_servers(app, user, named_servers, include_stopped_servers):
+    r = await api_request(app, 'users', user.name, 'server', method='post')
+    r.raise_for_status()
+    r = await api_request(app, 'users', user.name, 'servers', "named", method='post')
+    r.raise_for_status()
+
+    # wait for starts
+    for i in range(60):
+        r = await api_request(app, 'users', user.name)
+        r.raise_for_status()
+        user_model = r.json()
+        if not all(s["ready"] for s in user_model["servers"].values()):
+            time.sleep(1)
+        else:
+            break
+    else:
+        raise TimeoutError(f"User never stopped: {user_model}")
+
+    r = await api_request(app, 'users', user.name, 'server', method='delete')
+    r.raise_for_status()
+    r = await api_request(app, 'users', user.name, 'servers', "named", method='delete')
+    r.raise_for_status()
+
+    # wait for stops
+    for i in range(60):
+        r = await api_request(app, 'users', user.name)
+        r.raise_for_status()
+        user_model = r.json()
+        if not all(s["stopped"] for s in user_model["servers"].values()):
+            time.sleep(1)
+        else:
+            break
+    else:
+        raise TimeoutError(f"User never stopped: {user_model}")
+
+    # we have two stopped servers
+    path = f"users/{user.name}"
+    if include_stopped_servers:
+        path = f"{path}?include_stopped_servers"
+    r = await api_request(app, path)
+    r.raise_for_status()
+    user_model = r.json()
+    servers = list(user_model["servers"].values())
+    if include_stopped_servers:
+        assert len(servers) == 2
+        assert all(s["last_activity"] for s in servers)
+        assert all(s["started"] is None for s in servers)
+        assert all(s["stopped"] for s in servers)
+        assert not any(s["ready"] for s in servers)
+        assert not any(s["pending"] for s in servers)
+    else:
+        assert user_model["servers"] == {}

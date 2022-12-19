@@ -7,11 +7,11 @@ const withAPI = withProps(() => ({
       `/users?include_stopped_servers&offset=${offset}&limit=${limit}&name_filter=${
         name_filter || ""
       }`,
-      "GET"
+      "GET",
     ).then((data) => data.json()),
   updateGroups: (offset, limit) =>
     jhapiRequest(`/groups?offset=${offset}&limit=${limit}`, "GET").then(
-      (data) => data.json()
+      (data) => data.json(),
     ),
   shutdownHub: () => jhapiRequest("/shutdown", "POST"),
   startServer: (name, serverName = "") =>
@@ -42,10 +42,7 @@ const withAPI = withProps(() => ({
     jhapiRequest("/users/" + username, "GET")
       .then((data) => data.status)
       .then((data) => (data > 200 ? false : true)),
-  // Temporarily Unused
-  failRegexEvent: () => {
-    return null;
-  },
+
   noChangeEvent: () => {
     return null;
   },

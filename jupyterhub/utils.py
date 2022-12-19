@@ -16,28 +16,37 @@ import threading
 import uuid
 import warnings
 from binascii import b2a_hex
-from datetime import datetime
-from datetime import timezone
+from datetime import datetime, timezone
 from hmac import compare_digest
 from operator import itemgetter
+from urllib.parse import quote
 
 from async_generator import aclosing
 from sqlalchemy.exc import SQLAlchemyError
-from tornado import gen
-from tornado import ioloop
-from tornado import web
-from tornado.httpclient import AsyncHTTPClient
-from tornado.httpclient import HTTPError
+from tornado import gen, ioloop, web
+from tornado.httpclient import AsyncHTTPClient, HTTPError
 from tornado.log import app_log
 
-# For compatibility with python versions 3.6 or earlier.
-# asyncio.Task.all_tasks() is fully moved to asyncio.all_tasks() starting with 3.9. Also applies to current_task.
-try:
-    asyncio_all_tasks = asyncio.all_tasks
-    asyncio_current_task = asyncio.current_task
-except AttributeError as e:
-    asyncio_all_tasks = asyncio.Task.all_tasks
-    asyncio_current_task = asyncio.Task.current_task
+
+# Deprecated aliases: no longer needed now that we require 3.7
+def asyncio_all_tasks(loop=None):
+    warnings.warn(
+        "jupyterhub.utils.asyncio_all_tasks is deprecated in JupyterHub 2.4."
+        " Use asyncio.all_tasks().",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return asyncio.all_tasks(loop=loop)
+
+
+def asyncio_current_task(loop=None):
+    warnings.warn(
+        "jupyterhub.utils.asyncio_current_task is deprecated in JupyterHub 2.4."
+        " Use asyncio.current_task().",
+        DeprecationWarning,
+        stacklevel=2,
+    )
+    return asyncio.current_task(loop=loop)
 
 
 def random_port():
@@ -85,13 +94,51 @@ def can_connect(ip, port):
         return True
 
 
-def make_ssl_context(keyfile, certfile, cafile=None, verify=True, check_hostname=True):
-    """Setup context for starting an https server or making requests over ssl."""
+def make_ssl_context(
+    keyfile,
+    certfile,
+    cafile=None,
+    verify=None,
+    check_hostname=None,
+    purpose=ssl.Purpose.SERVER_AUTH,
+):
+    """Setup context for starting an https server or making requests over ssl.
+
+    Used for verifying internal ssl connections.
+    Certificates are always verified in both directions.
+    Hostnames are checked for client sockets.
+
+    Client sockets are created with `purpose=ssl.Purpose.SERVER_AUTH` (default),
+    Server sockets are created with `purpose=ssl.Purpose.CLIENT_AUTH`.
+    """
     if not keyfile or not certfile:
         return None
-    purpose = ssl.Purpose.SERVER_AUTH if verify else ssl.Purpose.CLIENT_AUTH
+    if verify is not None:
+        purpose = ssl.Purpose.SERVER_AUTH if verify else ssl.Purpose.CLIENT_AUTH
+        warnings.warn(
+            f"make_ssl_context(verify={verify}) is deprecated in jupyterhub 2.4."
+            f" Use make_ssl_context(purpose={purpose!s}).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+    if check_hostname is not None:
+        purpose = ssl.Purpose.SERVER_AUTH if check_hostname else ssl.Purpose.CLIENT_AUTH
+        warnings.warn(
+            f"make_ssl_context(check_hostname={check_hostname}) is deprecated in jupyterhub 2.4."
+            f" Use make_ssl_context(purpose={purpose!s}).",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+
     ssl_context = ssl.create_default_context(purpose, cafile=cafile)
+    # always verify
+    ssl_context.verify_mode = ssl.CERT_REQUIRED
+
+    if purpose == ssl.Purpose.SERVER_AUTH:
+        # SERVER_AUTH is authenticating servers (i.e. for a client)
+        ssl_context.check_hostname = True
     ssl_context.load_default_certs()
+
     ssl_context.load_cert_chain(certfile, keyfile)
     ssl_context.check_hostname = check_hostname
     return ssl_context
@@ -375,6 +422,11 @@ def compare_token(compare, token):
     return False
 
 
+def url_escape_path(value):
+    """Escape a value to be used in URLs, cookies, etc."""
+    return quote(value, safe='@~')
+
+
 def url_path_join(*pieces):
     """Join components of url into a relative url.
 
@@ -475,8 +527,8 @@ def print_stacks(file=sys.stderr):
     """
     # local imports because these will not be used often,
     # no need to add them to startup
-    import asyncio
     import traceback
+
     from .log import coroutine_frames
 
     print("Active threads: %i" % threading.active_count(), file=file)

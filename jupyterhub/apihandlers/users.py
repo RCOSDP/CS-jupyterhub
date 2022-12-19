@@ -3,26 +3,25 @@
 # Distributed under the terms of the Modified BSD License.
 import asyncio
 import json
-from datetime import datetime
-from datetime import timedelta
-from datetime import timezone
+from datetime import datetime, timedelta, timezone
 
 from async_generator import aclosing
 from dateutil.parser import parse as parse_date
-from sqlalchemy import func
-from sqlalchemy import or_
+from sqlalchemy import func, or_
 from tornado import web
 from tornado.iostream import StreamClosedError
 
-from .. import orm
-from .. import scopes
+from .. import orm, scopes
 from ..roles import assign_default_roles
 from ..scopes import needs_scope
 from ..user import User
-from ..utils import isoformat
-from ..utils import iterate_until
-from ..utils import maybe_future
-from ..utils import url_path_join
+from ..utils import (
+    isoformat,
+    iterate_until,
+    maybe_future,
+    url_escape_path,
+    url_path_join,
+)
 from .base import APIHandler
 
 
@@ -51,7 +50,7 @@ class SelfAPIHandler(APIHandler):
         for scope in identify_scopes:
             if scope not in self.expanded_scopes:
                 _added_scopes.add(scope)
-                self.expanded_scopes.add(scope)
+                self.expanded_scopes |= {scope}
         if _added_scopes:
             # re-parse with new scopes
             self.parsed_scopes = scopes.parse_scopes(self.expanded_scopes)
@@ -163,7 +162,7 @@ class UserListAPIHandler(APIHandler):
         for u in query:
             if post_filter is None or post_filter(u):
                 user_model = self.user_model(
-                    u, include_stopped_servers=include_stopped_servers
+                    u
                 )
                 if user_model:
                     user_list.append(user_model)
@@ -412,21 +411,18 @@ class UserTokenListAPIHandler(APIHandler):
             if requester is not user:
                 note += f" by {kind} {requester.name}"
 
-        token_roles = body.get('roles')
+        token_roles = body.get("roles")
+        token_scopes = body.get("scopes")
+
         try:
             api_token = user.new_api_token(
                 note=note,
                 expires_in=body.get('expires_in', None),
                 roles=token_roles,
+                scopes=token_scopes,
             )
-        except KeyError:
-            raise web.HTTPError(404, "Requested roles %r not found" % token_roles)
-        except ValueError:
-            raise web.HTTPError(
-                403,
-                "Requested roles %r cannot have higher permissions than the token owner"
-                % token_roles,
-            )
+        except ValueError as e:
+            raise web.HTTPError(400, str(e))
         if requester is not user:
             self.log.info(
                 "%s %s requested API token for %s",
@@ -512,17 +508,19 @@ class UserServerAPIHandler(APIHandler):
         if server_name:
             if not self.allow_named_servers:
                 raise web.HTTPError(400, "Named servers are not enabled.")
-            if (
-                self.named_server_limit_per_user > 0
-                and server_name not in user.orm_spawners
-            ):
+
+            named_server_limit_per_user = (
+                await self.get_current_user_named_server_limit()
+            )
+
+            if named_server_limit_per_user > 0 and server_name not in user.orm_spawners:
                 named_spawners = list(user.all_spawners(include_default=False))
-                if self.named_server_limit_per_user <= len(named_spawners):
+                if named_server_limit_per_user <= len(named_spawners):
                     raise web.HTTPError(
                         400,
                         "User {} already has the maximum of {} named servers."
                         "  One must be deleted before a new server can be created".format(
-                            user_name, self.named_server_limit_per_user
+                            user_name, named_server_limit_per_user
                         ),
                     )
         spawner = user.get_spawner(server_name, replace_failed=True)
@@ -701,7 +699,7 @@ class SpawnProgressAPIHandler(APIHandler):
         # - spawner not running at all
         # - spawner failed
         # - spawner pending start (what we expect)
-        url = url_path_join(user.url, server_name, '/')
+        url = url_path_join(user.url, url_escape_path(server_name), '/')
         ready_event = {
             'progress': 100,
             'ready': True,

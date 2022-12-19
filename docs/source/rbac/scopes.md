@@ -72,13 +72,31 @@ Requested resources are filtered based on the filter of the corresponding scope.
 
 In case a user resource is being accessed, any scopes with _group_ filters will be expanded to filters for each _user_ in those groups.
 
-### `!user` filter
+(self-referencing-filters)=
+
+### Self-referencing filters
+
+There are some 'shortcut' filters,
+which can be applied to all scopes,
+that filter based on the entities associated with the request.
 
 The `!user` filter is a special horizontal filter that strictly refers to the **"owner only"** scopes, where _owner_ is a user entity. The filter resolves internally into `!user=<ownerusername>` ensuring that only the owner's resources may be accessed through the associated scopes.
 
 For example, the `server` role assigned by default to server tokens contains `access:servers!user` and `users:activity!user` scopes. This allows the token to access and post activity of only the servers owned by the token owner.
 
-The filter can be applied to any scope.
+:::{versionadded} 3.0
+`!service` and `!server` filters.
+:::
+
+In addition to `!user`, _tokens_ may have filters `!service`
+or `!server`, which expand similarly to `!service=servicename`
+and `!server=servername`.
+This only applies to tokens issued via the OAuth flow.
+In these cases, the name is the _issuing_ entity (a service or single-user server),
+so that access can be restricted to the issuing service,
+e.g. `access:servers!server` would grant access only to the server that requested the token.
+
+These filters can be applied to any scope.
 
 (vertical-filtering-target)=
 
@@ -114,10 +132,169 @@ There are four exceptions to the general {ref}`scope conventions <scope-conventi
 
 ```
 
+:::{versionadded} 3.0
+The `admin-ui` scope is added to explicitly grant access to the admin page,
+rather than combining `admin:users` and `admin:servers` permissions.
+This means a deployment can enable the admin page with only a subset of functionality enabled.
+
+Note that this means actions to take _via_ the admin UI
+and access _to_ the admin UI are separated.
+For example, it generally doesn't make sense to grant
+`admin-ui` without at least `list:users` for at least some subset of users.
+
+For example:
+
+```python
+c.JupyterHub.load_roles = [
+  {
+    "name": "instructor-data8",
+    "scopes": [
+      # access to the admin page
+      "admin-ui",
+      # list users in the class group
+      "list:users!group=students-data8",
+      # start/stop servers for users in the class
+      "admin:servers!group=students-data8",
+      # access servers for users in the class
+      "access:servers!group=students-data8",
+    ],
+    "group": ["instructors-data8"],
+  }
+]
+```
+
+will grant instructors in the data8 course permission to:
+
+1. view the admin UI
+2. see students in the class (but not all users)
+3. start/stop/access servers for users in the class
+4. but _not_ permission to administer the users themselves (e.g. change their permissions, etc.)
+   :::
+
 ```{Caution}
 Note that only the {ref}`horizontal filtering <horizontal-filtering-target>` can be added to scopes to customize them. \
 Metascopes `self` and `all`, `<resource>`, `<resource>:<subresource>`, `read:<resource>`, `admin:<resource>`, and `access:<resource>` scopes are predefined and cannot be changed otherwise.
 ```
+
+(custom-scopes)=
+
+### Custom scopes
+
+:::{versionadded} 3.0
+:::
+
+JupyterHub 3.0 introduces support for custom scopes.
+Services that use JupyterHub for authentication and want to implement their own granular access may define additional _custom_ scopes and assign them to users with JupyterHub roles.
+
+% Note: keep in sync with pattern/description in jupyterhub/scopes.py
+
+Custom scope names must start with `custom:`
+and contain only lowercase ascii letters, numbers, hyphen, underscore, colon, and asterisk (`-_:*`).
+The part after `custom:` must start with a letter or number.
+Scopes may not end with a hyphen or colon.
+
+The only strict requirement is that a custom scope definition must have a `description`.
+It _may_ also have `subscopes` if you are defining multiple scopes that have a natural hierarchy,
+
+For example:
+
+```python
+c.JupyterHub.custom_scopes = {
+    "custom:myservice:read": {
+        "description": "read-only access to myservice",
+    },
+    "custom:myservice:write": {
+        "description": "write access to myservice",
+        # write permission implies read permission
+        "subscopes": [
+            "custom:myservice:read",
+        ],
+    },
+}
+
+c.JupyterHub.load_roles = [
+    # graders have read-only access to the service
+    {
+        "name": "service-user",
+        "groups": ["graders"],
+        "scopes": [
+            "custom:myservice:read",
+            "access:service!service=myservice",
+        ],
+    },
+    # instructors have read and write access to the service
+    {
+        "name": "service-admin",
+        "groups": ["instructors"],
+        "scopes": [
+            "custom:myservice:write",
+            "access:service!service=myservice",
+        ],
+    },
+]
+```
+
+In the above configuration, two scopes are defined:
+
+- `custom:myservice:read` grants read-only access to the service, and
+- `custom:myservice:write` grants write access to the service
+- write access _implies_ read access via the `subscope`
+
+These custom scopes are assigned to two groups via `roles`:
+
+- users in the group `graders` are granted read access to the service
+- users in the group `instructors` are
+- both are granted _access_ to the service via `access:service!service=myservice`
+
+When the service completes OAuth, it will retrieve the user model from `/hub/api/user`.
+This model includes a `scopes` field which is a list of authorized scope for the request,
+which can be used.
+
+```python
+def require_scope(scope):
+    """decorator to require a scope to perform an action"""
+    def wrapper(func):
+        @functools.wraps(func)
+        def wrapped_func(request):
+            user = fetch_hub_api_user(request.token)
+            if scope not in user["scopes"]:
+                raise HTTP403(f"Requires scope {scope}")
+            else:
+                return func()
+    return wrapper
+
+@require_scope("custom:myservice:read")
+async def read_something(request):
+    ...
+
+@require_scope("custom:myservice:write")
+async def write_something(request):
+    ...
+```
+
+If you use {class}`~.HubOAuthenticated`, this check is performed automatically
+against the `.hub_scopes` attribute of each Handler
+(the default is populated from `$JUPYTERHUB_OAUTH_ACCESS_SCOPES` and usually `access:services!service=myservice`).
+
+:::{versionchanged} 3.0
+The JUPYTERHUB_OAUTH_SCOPES environment variable is deprecated and renamed to JUPYTERHUB_OAUTH_ACCESS_SCOPES,
+to avoid ambiguity with JUPYTERHUB_OAUTH_CLIENT_ALLOWED_SCOPES
+:::
+
+```python
+from tornado import web
+from jupyterhub.services.auth import HubOAuthenticated
+
+class MyHandler(HubOAuthenticated, BaseHandler):
+    hub_scopes = ["custom:myservice:read"]
+
+    @web.authenticated
+    def get(self):
+        ...
+```
+
+Existing scope filters (`!user=`, etc.) may be applied to custom scopes.
+Custom scope _filters_ are NOT supported.
 
 ### Scopes and APIs
 

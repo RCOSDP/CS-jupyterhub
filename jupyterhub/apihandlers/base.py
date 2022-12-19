@@ -4,19 +4,15 @@
 import json
 from functools import lru_cache
 from http.client import responses
-from urllib.parse import parse_qs
-from urllib.parse import urlencode
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
+from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 from sqlalchemy.exc import SQLAlchemyError
 from tornado import web
 
 from .. import orm
 from ..handlers import BaseHandler
-from ..utils import get_browser_protocol
-from ..utils import isoformat
-from ..utils import url_path_join
+from ..scopes import get_scopes_for
+from ..utils import get_browser_protocol, isoformat, url_escape_path, url_path_join
 
 PAGINATION_MEDIA_TYPE = "application/jupyterhub-pagination+json"
 
@@ -202,6 +198,7 @@ class APIHandler(BaseHandler):
             orm_spawner = spawner
             pending = None
             ready = False
+            stopped = True
             user = user
             if user is None:
                 raise RuntimeError("Must specify User with orm.Spawner")
@@ -211,6 +208,7 @@ class APIHandler(BaseHandler):
             pending = spawner.pending
             ready = spawner.ready
             user = spawner.user
+            stopped = not spawner.active
             state = spawner.get_state()
 
         model = {
@@ -219,7 +217,8 @@ class APIHandler(BaseHandler):
             'started': isoformat(orm_spawner.started),
             'pending': pending,
             'ready': ready,
-            'url': url_path_join(user.url, spawner.name, '/'),
+            'stopped': stopped,
+            'url': url_path_join(user.url, url_escape_path(spawner.name), '/'),
             'user_options': spawner.user_options,
             'progress_url': user.progress_url(spawner.name),
         }
@@ -243,7 +242,9 @@ class APIHandler(BaseHandler):
             owner_key: owner,
             'id': token.api_id,
             'kind': 'api_token',
-            'roles': [r.name for r in token.roles],
+            # deprecated field, but leave it present.
+            'roles': [],
+            'scopes': list(get_scopes_for(token)),
             'created': isoformat(token.created),
             'last_activity': isoformat(token.last_activity),
             'expires_at': isoformat(token.expires_at),
@@ -269,10 +270,22 @@ class APIHandler(BaseHandler):
             keys.update(allowed_keys)
         return model
 
-    def user_model(self, user, *, include_stopped_servers=False):
+    _include_stopped_servers = None
+
+    @property
+    def include_stopped_servers(self):
+        """Whether stopped servers should be included in user models"""
+        if self._include_stopped_servers is None:
+            self._include_stopped_servers = self.get_argument(
+                "include_stopped_servers", "0"
+            ).lower() not in {"0", "false"}
+        return self._include_stopped_servers
+
+    def user_model(self, user):
         """Get the JSON model for a User object"""
         if isinstance(user, orm.User):
             user = self.users[user.id]
+        include_stopped_servers = self.include_stopped_servers
         model = {
             'kind': 'user',
             'name': user.name,
@@ -283,8 +296,8 @@ class APIHandler(BaseHandler):
             'pending': None,
             'created': isoformat(user.created),
             'last_activity': isoformat(user.last_activity),
-            'mail_address': user.mail_address,
             'auth_state': None,  # placeholder, filled in later
+            'mail_address': user.mail_address
         }
         access_map = {
             'read:users': {
@@ -297,7 +310,7 @@ class APIHandler(BaseHandler):
                 'pending',
                 'created',
                 'last_activity',
-                'mail_address'
+                'mail_address',
             },
             'read:users:name': {'kind', 'name', 'admin'},
             'read:users:groups': {'kind', 'name', 'groups'},
@@ -326,17 +339,17 @@ class APIHandler(BaseHandler):
 
             if include_stopped_servers:
                 # add any stopped servers in the db
-                seen = set(user.spawners.keys())
+                seen = set(servers.keys())
                 for name, orm_spawner in user.orm_spawners.items():
-                    if name not in seen and scope_filter(
-                        orm_spawner, kind='server'
-                    ):
+                    if name not in seen and scope_filter(orm_spawner, kind='server'):
                         servers[name] = self.server_model(orm_spawner, user=user)
+
             if "servers" in allowed_keys or servers:
                 # omit servers if no access
                 # leave present and empty
                 # if request has access to read servers in general
                 model["servers"] = servers
+
         return model
 
     def group_model(self, group):
@@ -393,7 +406,6 @@ class APIHandler(BaseHandler):
         'groups': list,
         'roles': list,
         'auth_state': dict,
-        'mail_address': str,
     }
 
     _group_model_types = {'name': str, 'users': list, 'roles': list}

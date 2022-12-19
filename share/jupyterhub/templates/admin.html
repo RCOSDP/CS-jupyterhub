@@ -7,7 +7,7 @@
     window.base_url = "{{ base_url|safe }}"
     window.grafana_host = "{{ grafana_host|safe }}"
   </script>
-  <script src="static/js/admin-react.js"></script>
+  <script src={{ static_url("js/admin-react.js") }}></script>
 </div>
 {% endblock %}
 

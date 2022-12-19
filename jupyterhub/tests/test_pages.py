@@ -2,31 +2,28 @@
 import asyncio
 import sys
 from unittest import mock
-from urllib.parse import parse_qs
-from urllib.parse import urlencode
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 from bs4 import BeautifulSoup
 from tornado.escape import url_escape
 from tornado.httputil import url_concat
 
-from .. import orm
-from .. import roles
-from .. import scopes
+from .. import orm, roles, scopes
 from ..auth import Authenticator
 from ..handlers import BaseHandler
 from ..utils import url_path_join
 from ..utils import url_path_join as ujoin
-from .mocking import FalsyCallableFormSpawner
-from .mocking import FormSpawner
+from .mocking import FalsyCallableFormSpawner, FormSpawner
 from .test_api import next_event
-from .utils import api_request
-from .utils import async_requests
-from .utils import AsyncSession
-from .utils import get_page
-from .utils import public_host
-from .utils import public_url
+from .utils import (
+    AsyncSession,
+    api_request,
+    async_requests,
+    get_page,
+    public_host,
+    public_url,
+)
 
 
 async def test_root_no_auth(app):
@@ -743,9 +740,17 @@ async def test_login_fail(app):
     assert not r.cookies
 
 
-async def test_login_strip(app):
-    """Test that login form doesn't strip whitespace from passwords"""
-    form_data = {'username': 'spiff', 'password': ' space man '}
+@pytest.mark.parametrize(
+    "form_user, auth_user, form_password",
+    [
+        ("spiff", "spiff", " space man "),
+        (" spiff ", "spiff", " space man "),
+    ],
+)
+async def test_login_strip(app, form_user, auth_user, form_password):
+    """Test that login form strips space form usernames, but not passwords"""
+    form_data = {"username": form_user, "password": form_password}
+    expected_auth = {"username": auth_user, "password": form_password}
     base_url = public_url(app)
     called_with = []
 
@@ -757,7 +762,7 @@ async def test_login_strip(app):
             base_url + 'hub/login', data=form_data, allow_redirects=False
         )
 
-    assert called_with == [form_data]
+    assert called_with == [expected_auth]
 
 
 @pytest.mark.parametrize(
@@ -937,6 +942,14 @@ async def test_auto_login_logout(app):
     logout_url = public_host(app) + app.tornado_settings['logout_url']
     assert r.url == logout_url
     assert r.cookies == {}
+    # don't include logged-out user in page:
+    try:
+        idx = r.text.index(name)
+    except ValueError:
+        # not found, good!
+        pass
+    else:
+        assert name not in r.text[idx - 100 : idx + 100]
 
 
 async def test_logout(app):
@@ -1114,17 +1127,27 @@ async def test_bad_oauth_get(app, params):
     [
         (["users"], False),
         (["admin:users"], False),
-        (["users", "admin:users", "admin:servers"], True),
+        (["users", "admin:users", "admin:servers"], False),
+        (["admin-ui"], True),
     ],
 )
 async def test_admin_page_access(app, scopes, has_access, create_user_with_scopes):
     user = create_user_with_scopes(*scopes)
     cookies = await app.login_user(user.name)
-    r = await get_page("/admin", app, cookies=cookies)
+    home_resp = await get_page("/home", app, cookies=cookies)
+    admin_resp = await get_page("/admin", app, cookies=cookies)
+    assert home_resp.status_code == 200
+    soup = BeautifulSoup(home_resp.text, "html.parser")
+    nav = soup.find("div", id="thenavbar")
+    links = [a["href"] for a in nav.find_all("a")]
+
+    admin_url = app.base_url + "hub/admin"
     if has_access:
-        assert r.status_code == 200
+        assert admin_resp.status_code == 200
+        assert admin_url in links
     else:
-        assert r.status_code == 403
+        assert admin_resp.status_code == 403
+        assert admin_url not in links
 
 
 async def test_oauth_page_scope_appearance(
@@ -1140,12 +1163,13 @@ async def test_oauth_page_scope_appearance(
     )
     service = mockservice_url
     user = create_user_with_scopes("access:services")
+    roles.grant_role(app.db, user, service_role)
     oauth_client = (
         app.db.query(orm.OAuthClient)
         .filter_by(identifier=service.oauth_client_id)
         .one()
     )
-    oauth_client.allowed_roles = [service_role]
+    oauth_client.allowed_scopes = sorted(roles.roles_to_scopes([service_role]))
     app.db.commit()
 
     s = AsyncSession()

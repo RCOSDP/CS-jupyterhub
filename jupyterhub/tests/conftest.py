@@ -26,7 +26,7 @@ Fixtures to add functionality or spawning behavior
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import asyncio
-import inspect
+import copy
 import os
 import sys
 from functools import partial
@@ -34,49 +34,22 @@ from getpass import getuser
 from subprocess import TimeoutExpired
 from unittest import mock
 
-from pytest import fixture
-from pytest import raises
-from tornado import ioloop
+from pytest import fixture, raises
 from tornado.httpclient import HTTPError
 from tornado.platform.asyncio import AsyncIOMainLoop
 
 import jupyterhub.services.service
-from . import mocking
-from .. import crypto
-from .. import orm
-from ..roles import create_role
-from ..roles import get_default_roles
-from ..roles import mock_roles
-from ..roles import update_roles
+
+from .. import crypto, orm, scopes
+from ..roles import create_role, get_default_roles, mock_roles, update_roles
 from ..utils import random_port
+from . import mocking
 from .mocking import MockHub
 from .test_services import mockservice_cmd
 from .utils import add_user
 
 # global db session object
 _db = None
-
-
-def _pytest_collection_modifyitems(items):
-    """This function is automatically run by pytest passing all collected test
-    functions.
-
-    We use it to add asyncio marker to all async tests and assert we don't use
-    test functions that are async generators which wouldn't make sense.
-
-    It is no longer required with pytest-asyncio >= 0.17
-    """
-    for item in items:
-        if inspect.iscoroutinefunction(item.obj):
-            item.add_marker('asyncio')
-        assert not inspect.isasyncgenfunction(item.obj)
-
-
-if sys.version_info < (3, 7):
-    # apply pytest-asyncio's 'auto' mode on Python 3.6.
-    # 'auto' mode is new in pytest-asyncio 0.17,
-    # which requires Python 3.7.
-    pytest_collection_modifyitems = _pytest_collection_modifyitems
 
 
 @fixture(scope='module')
@@ -157,16 +130,13 @@ def event_loop(request):
 
 
 @fixture(scope='module')
-def io_loop(event_loop, request):
+async def io_loop(event_loop, request):
     """Same as pytest-tornado.io_loop, but re-scoped to module-level"""
-    ioloop.IOLoop.configure(AsyncIOMainLoop)
     io_loop = AsyncIOMainLoop()
-    io_loop.make_current()
     assert asyncio.get_event_loop() is event_loop
     assert io_loop.asyncio_loop is event_loop
 
     def _close():
-        io_loop.clear_current()
         io_loop.close(all_fds=True)
 
     request.addfinalizer(_close)
@@ -290,7 +260,22 @@ class MockServiceSpawner(jupyterhub.services.service._ServiceSpawner):
 _mock_service_counter = 0
 
 
-def _mockservice(request, app, url=False):
+def _mockservice(request, app, external=False, url=False):
+    """
+    Add a service to the application
+
+    Args:
+        request: pytest request fixture
+        app: MockHub application
+        external (bool):
+          If False (default), launch the service.
+          Otherwise, consider it 'external,
+          registering a service in the database,
+          but don't start it.
+        url (bool):
+          If True, register the service at a URL
+          (as opposed to headless, API-only).
+    """
     global _mock_service_counter
     _mock_service_counter += 1
     name = 'mock-service-%i' % _mock_service_counter
@@ -300,6 +285,10 @@ def _mockservice(request, app, url=False):
             spec['url'] = 'https://127.0.0.1:%i' % random_port()
         else:
             spec['url'] = 'http://127.0.0.1:%i' % random_port()
+
+    if external:
+
+        spec['oauth_redirect_uri'] = 'http://127.0.0.1:%i' % random_port()
 
     io_loop = app.io_loop
 
@@ -312,24 +301,26 @@ def _mockservice(request, app, url=False):
         assert name in app._service_map
         service = app._service_map[name]
         token = service.orm.api_tokens[0]
-        update_roles(app.db, token, roles=['token'])
 
         async def start():
             # wait for proxy to be updated before starting the service
             await app.proxy.add_all_services(app._service_map)
             await service.start()
 
-        io_loop.run_sync(start)
+        if not external:
+            io_loop.run_sync(start)
 
         def cleanup():
-            asyncio.get_event_loop().run_until_complete(service.stop())
+            if not external:
+                asyncio.get_event_loop().run_until_complete(service.stop())
             app.services[:] = []
             app._service_map.clear()
 
         request.addfinalizer(cleanup)
         # ensure process finishes starting
-        with raises(TimeoutExpired):
-            service.proc.wait(1)
+        if not external:
+            with raises(TimeoutExpired):
+                service.proc.wait(1)
         if url:
             io_loop.run_sync(partial(service.server.wait_up, http=True))
     return service
@@ -339,6 +330,12 @@ def _mockservice(request, app, url=False):
 def mockservice(request, app):
     """Mock a service with no external service url"""
     yield _mockservice(request, app, url=False)
+
+
+@fixture
+def mockservice_external(request, app):
+    """Mock an externally managed service (don't start anything)"""
+    yield _mockservice(request, app, external=True, url=False)
 
 
 @fixture
@@ -467,3 +464,11 @@ def create_service_with_scopes(app, create_temp_role):
     for service in temp_service:
         app.db.delete(service)
     app.db.commit()
+
+
+@fixture
+def preserve_scopes():
+    """Revert any custom scopes after test"""
+    scope_definitions = copy.deepcopy(scopes.scope_definitions)
+    yield scope_definitions
+    scopes.scope_definitions = scope_definitions

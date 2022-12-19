@@ -9,50 +9,44 @@ import random
 import re
 import time
 import uuid
-from datetime import datetime
-from datetime import timedelta
+from datetime import datetime, timedelta
 from http.client import responses
-from urllib.parse import parse_qs
-from urllib.parse import parse_qsl
-from urllib.parse import urlencode
-from urllib.parse import urlparse
-from urllib.parse import urlunparse
+from urllib.parse import parse_qs, parse_qsl, urlencode, urlparse, urlunparse
 
 from jinja2 import TemplateNotFound
 from sqlalchemy.exc import SQLAlchemyError
-from tornado import gen
-from tornado import web
-from tornado.httputil import HTTPHeaders
-from tornado.httputil import url_concat
+from tornado import gen, web
+from tornado.httputil import HTTPHeaders, url_concat
 from tornado.ioloop import IOLoop
 from tornado.log import app_log
-from tornado.web import addslash
-from tornado.web import RequestHandler
+from tornado.web import RequestHandler, addslash
 
-from .. import __version__
-from .. import orm
-from .. import roles
-from .. import scopes
-from ..metrics import PROXY_ADD_DURATION_SECONDS
-from ..metrics import PROXY_DELETE_DURATION_SECONDS
-from ..metrics import ProxyDeleteStatus
-from ..metrics import RUNNING_SERVERS
-from ..metrics import SERVER_POLL_DURATION_SECONDS
-from ..metrics import SERVER_SPAWN_DURATION_SECONDS
-from ..metrics import SERVER_STOP_DURATION_SECONDS
-from ..metrics import ServerPollStatus
-from ..metrics import ServerSpawnStatus
-from ..metrics import ServerStopStatus
-from ..metrics import TOTAL_USERS
+from .. import __version__, orm, roles, scopes
+from ..metrics import (
+    PROXY_ADD_DURATION_SECONDS,
+    PROXY_DELETE_DURATION_SECONDS,
+    RUNNING_SERVERS,
+    SERVER_POLL_DURATION_SECONDS,
+    SERVER_SPAWN_DURATION_SECONDS,
+    SERVER_STOP_DURATION_SECONDS,
+    TOTAL_USERS,
+    ProxyDeleteStatus,
+    ServerPollStatus,
+    ServerSpawnStatus,
+    ServerStopStatus,
+)
 from ..objects import Server
 from ..scopes import needs_scope
 from ..spawner import LocalProcessSpawner
 from ..user import User
-from ..utils import AnyTimeoutError
-from ..utils import get_accepted_mimetype
-from ..utils import get_browser_protocol
-from ..utils import maybe_future
-from ..utils import url_path_join
+from ..utils import (
+    AnyTimeoutError,
+    get_accepted_mimetype,
+    get_browser_protocol,
+    maybe_future,
+    url_escape_path,
+    url_path_join,
+)
 
 # pattern for the authentication token header
 auth_header_pat = re.compile(r'^(?:token|bearer)\s+([^\s]+)$', flags=re.IGNORECASE)
@@ -269,6 +263,17 @@ class BaseHandler(RequestHandler):
     @property
     def authenticate_prometheus(self):
         return self.settings.get('authenticate_prometheus', True)
+
+    async def get_current_user_named_server_limit(self):
+        """
+        Return named server limit for current user.
+        """
+        named_server_limit_per_user = self.named_server_limit_per_user
+
+        if callable(named_server_limit_per_user):
+            return await maybe_future(named_server_limit_per_user(self))
+
+        return named_server_limit_per_user
 
     def get_auth_token(self):
         """Get the authorization token from Authorization header"""
@@ -553,8 +558,6 @@ class BaseHandler(RequestHandler):
             '_xsrf',
             **clear_xsrf_cookie_kwargs,
         )
-        # Reset _jupyterhub_user
-        self._jupyterhub_user = None
 
     def _set_cookie(self, key, value, encrypted=True, **overrides):
         """Setting any cookie should go through here
@@ -878,6 +881,12 @@ class BaseHandler(RequestHandler):
         user_server_name = user.name
 
         if server_name:
+            if '/' in server_name:
+                error_message = (
+                    f"Invalid server_name (may not contain '/'): {server_name}"
+                )
+                self.log.error(error_message)
+                raise web.HTTPError(400, error_message)
             user_server_name = f'{user.name}:{server_name}'
 
         if server_name in user.spawners and user.spawners[server_name].pending:
@@ -1536,6 +1545,7 @@ class UserUrlHandler(BaseHandler):
                 server_name = ''
         else:
             server_name = ''
+        escaped_server_name = url_escape_path(server_name)
         spawner = user.spawners[server_name]
 
         if spawner.ready:
@@ -1554,7 +1564,10 @@ class UserUrlHandler(BaseHandler):
 
         pending_url = url_concat(
             url_path_join(
-                self.hub.base_url, 'spawn-pending', user.escaped_name, server_name
+                self.hub.base_url,
+                'spawn-pending',
+                user.escaped_name,
+                escaped_server_name,
             ),
             {'next': self.request.uri},
         )
@@ -1568,7 +1581,9 @@ class UserUrlHandler(BaseHandler):
         # page *in* the server is not found, we return a 424 instead of a 404.
         # We allow retaining the old behavior to support older JupyterLab versions
         spawn_url = url_concat(
-            url_path_join(self.hub.base_url, "spawn", user.escaped_name, server_name),
+            url_path_join(
+                self.hub.base_url, "spawn", user.escaped_name, escaped_server_name
+            ),
             {"next": self.request.uri},
         )
         self.set_status(

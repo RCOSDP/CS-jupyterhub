@@ -84,6 +84,9 @@ class LogoutHandler(BaseHandler):
         """
         await self.default_handle_logout()
         await self.handle_logout()
+        # clear jupyterhub user before rendering logout page
+        # ensures the login button is shown instead of logout
+        self._jupyterhub_user = None
         await self.render_logout_page()
 
 
@@ -145,7 +148,9 @@ class LoginHandler(BaseHandler):
         # parse the arguments dict
         data = {}
         for arg in self.request.arguments:
-            data[arg] = self.get_argument(arg, strip=False)
+            # strip username, but not other fields like passwords,
+            # which should be allowed to start or end with space
+            data[arg] = self.get_argument(arg, strip=arg == "username")
 
         auth_timer = self.statsd.timer('login.authenticate').start()
         user = await self.login_user(data)

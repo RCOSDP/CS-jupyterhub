@@ -9,9 +9,8 @@ import warnings
 from concurrent.futures import ThreadPoolExecutor
 from functools import partial
 from shutil import which
-from subprocess import PIPE
-from subprocess import Popen
-from subprocess import STDOUT
+from subprocess import PIPE, STDOUT, Popen
+from textwrap import dedent
 
 try:
     import pamela
@@ -20,19 +19,35 @@ except Exception as e:
     _pamela_error = e
 
 from tornado.concurrent import run_on_executor
-
+from traitlets import Any, Bool, Dict, Integer, Set, Unicode, default, observe
 from traitlets.config import LoggingConfigurable
-from traitlets import Bool, Integer, Set, Unicode, Dict, Any, default, observe
 
 from .handlers.login import LoginHandler
-from .utils import maybe_future, url_path_join
 from .traitlets import Command
+from .utils import maybe_future, url_path_join
 
 
 class Authenticator(LoggingConfigurable):
     """Base class for implementing an authentication provider for JupyterHub"""
 
     db = Any()
+
+    @default("db")
+    def _deprecated_db(self):
+        self.log.warning(
+            dedent(
+                """
+                The shared database session at Authenticator.db is deprecated, and will be removed.
+                Please manage your own database and connections.
+
+                Contact JupyterHub at https://github.com/jupyterhub/jupyterhub/issues/3700
+                if you have questions or ideas about direct database needs for your Authenticator.
+                """
+            ),
+        )
+        return self._deprecated_db_session
+
+    _deprecated_db_session = Any()
 
     enable_auth_state = Bool(
         False,
@@ -240,6 +255,9 @@ class Authenticator(LoggingConfigurable):
             return False
         if not username:
             # empty usernames are not allowed
+            return False
+        if username != username.strip():
+            # starting/ending with space is not allowed
             return False
         if not self.username_regex:
             return True
@@ -758,8 +776,6 @@ def _deprecated_method(old_name, new_name, version):
     return deprecated
 
 
-import types
-
 # deprecate white/blacklist method names
 for _old_name, _new_name, _version in [
     ("check_whitelist", "check_allowed", "1.2"),
@@ -817,7 +833,7 @@ class LocalAuthenticator(Authenticator):
             raise ValueError("I don't know how to create users on OS X")
         elif which('pw'):
             # Probably BSD
-            return ['pw', 'useradd', '-m']
+            return ['pw', 'useradd', '-m', '-n']
         else:
             # This appears to be the Linux non-interactive adduser command:
             return ['adduser', '-q', '--gecos', '""', '--disabled-password']

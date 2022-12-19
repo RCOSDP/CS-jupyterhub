@@ -1,32 +1,20 @@
 """Tests for jupyterhub.singleuser"""
 import os
 import sys
-from contextlib import contextmanager
-from subprocess import CalledProcessError
-from subprocess import check_output
+from contextlib import nullcontext
+from subprocess import CalledProcessError, check_output
 from unittest import mock
-from urllib.parse import urlencode
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse
 
 import pytest
 from bs4 import BeautifulSoup
 
 import jupyterhub
+
 from .. import orm
-
-from ..singleuser import SingleUserNotebookApp
 from ..utils import url_path_join
-from .mocking import public_url
-from .mocking import StubSingleUserSpawner
-from .utils import async_requests
-from .utils import AsyncSession
-from .utils import get_page
-
-
-@contextmanager
-def nullcontext():
-    """Python 3.7+ contextlib.nullcontext, backport for 3.6"""
-    yield
+from .mocking import StubSingleUserSpawner, public_url
+from .utils import AsyncSession, async_requests, get_page
 
 
 @pytest.mark.parametrize(
@@ -201,10 +189,22 @@ def test_singleuser_app_class(JUPYTERHUB_SINGLEUSER_APP):
         import jupyter_server  # noqa
     except ImportError:
         have_server = False
-        expect_error = "jupyter_server" in JUPYTERHUB_SINGLEUSER_APP
     else:
         have_server = True
-        expect_error = False
+    try:
+        import notebook.notebookapp  # noqa
+    except ImportError:
+        have_notebook = False
+    else:
+        have_notebook = True
+
+    if JUPYTERHUB_SINGLEUSER_APP.startswith("notebook."):
+        expect_error = not have_notebook
+    elif JUPYTERHUB_SINGLEUSER_APP.startswith("jupyter_server."):
+        expect_error = not have_server
+    else:
+        # not specified, will try both
+        expect_error = not (have_server or have_notebook)
 
     if expect_error:
         ctx = pytest.raises(CalledProcessError)
@@ -231,8 +231,7 @@ def test_singleuser_app_class(JUPYTERHUB_SINGLEUSER_APP):
         assert '--ServerApp.' in out
         assert '--NotebookApp.' not in out
 
-@pytest.mark.skipif('jupyter-server' == SingleUserNotebookApp.name,
-                    reason="This test is only for classic NotebookApp")
+
 async def test_nbclassic_control_panel(app, user):
     # use StubSingleUserSpawner to launch a single-user app in a thread
     app.spawner_class = StubSingleUserSpawner

@@ -9,18 +9,10 @@ import shutil
 import sys
 from subprocess import check_call
 
-from setuptools import Command
-from setuptools import setup
+from setuptools import Command, setup
 from setuptools.command.bdist_egg import bdist_egg
 from setuptools.command.build_py import build_py
 from setuptools.command.sdist import sdist
-
-
-v = sys.version_info
-if v[:2] < (3, 6):
-    error = "ERROR: JupyterHub requires Python version 3.6 or above."
-    print(error, file=sys.stderr)
-    sys.exit(1)
 
 shell = False
 if os.name in ('nt', 'dos'):
@@ -93,7 +85,7 @@ setup_args = dict(
     license="BSD",
     platforms="Linux, Mac OS X",
     keywords=['Interactive', 'Interpreter', 'Shell', 'Web'],
-    python_requires=">=3.6",
+    python_requires=">=3.7",
     entry_points={
         'jupyterhub.authenticators': [
             'default = jupyterhub.auth:PAMAuthenticator',
@@ -129,12 +121,46 @@ setup_args = dict(
         'Source': 'https://github.com/jupyterhub/jupyterhub/',
         'Tracker': 'https://github.com/jupyterhub/jupyterhub/issues',
     },
+    extras_require={
+        "test": [
+            "beautifulsoup4[html5lib]",
+            "coverage",
+            # cryptography is an optional dependency for jupyterhub that we test
+            # against by default
+            "cryptography",
+            "jsonschema",
+            "jupyterlab>=3",
+            "mock",
+            # nbclassic provides the '/tree/' handler that we tests against in
+            # the test test_nbclassic_control_panel.
+            "nbclassic",
+            "pytest>=3.3",
+            "pytest-asyncio>=0.17",
+            "pytest-cov",
+            "requests-mock",
+            "selenium",
+            "virtualenv",
+        ],
+    },
 )
 
 
 def mtime(path):
     """shorthand for mtime"""
     return os.stat(path).st_mtime
+
+
+def recursive_mtime(path):
+    """Recursively get newest mtime of files"""
+    if os.path.isfile(path):
+        return mtime(path)
+    current = 0
+    for dirname, _, filenames in os.walk(path):
+        if filenames:
+            current = max(
+                current, max(mtime(os.path.join(dirname, f)) for f in filenames)
+            )
+    return current
 
 
 class BaseCommand(Command):
@@ -163,9 +189,6 @@ class NPM(BaseCommand):
     bower_dir = pjoin(static, 'components')
 
     def should_run(self):
-        if not shutil.which('npm'):
-            print("npm unavailable", file=sys.stderr)
-            return False
         if not os.path.exists(self.bower_dir):
             return True
         if not os.path.exists(self.node_modules):
@@ -190,6 +213,7 @@ class NPM(BaseCommand):
         os.utime(self.bower_dir)
         # update data-files in case this created new files
         self.distribution.data_files = get_data_files()
+        assert not self.should_run(), 'NPM.run failed'
 
 
 class CSS(BaseCommand):
@@ -250,6 +274,67 @@ class CSS(BaseCommand):
             raise
         # update data-files in case this created new files
         self.distribution.data_files = get_data_files()
+        assert not self.should_run(), 'CSS.run failed'
+
+
+class JSX(BaseCommand):
+    description = "build admin app"
+
+    jsx_dir = pjoin(here, 'jsx')
+    js_target = pjoin(static, 'js', 'admin-react.js')
+
+    def should_run(self):
+        if os.getenv('READTHEDOCS'):
+            # yarn not available on RTD
+            return False
+
+        if not os.path.exists(self.js_target):
+            return True
+
+        js_target_mtime = mtime(self.js_target)
+        jsx_mtime = recursive_mtime(self.jsx_dir)
+        if js_target_mtime < jsx_mtime:
+            return True
+        return False
+
+    def run(self):
+        if not self.should_run():
+            print("JSX admin app is up to date")
+            return
+
+        # jlpm is a version of yarn bundled with JupyterLab
+        if shutil.which('yarn'):
+            yarn = 'yarn'
+        elif shutil.which('jlpm'):
+            print("yarn not found, using jlpm")
+            yarn = 'jlpm'
+        else:
+            raise Exception('JSX needs to be updated but yarn is not installed')
+
+        print("Installing JSX admin app requirements")
+        check_call(
+            [yarn],
+            cwd=self.jsx_dir,
+            shell=shell,
+        )
+
+        print("Building JSX admin app")
+        check_call(
+            [yarn, 'build'],
+            cwd=self.jsx_dir,
+            shell=shell,
+        )
+
+        print("Copying JSX admin app to static/js")
+        check_call(
+            [yarn, 'place'],
+            cwd=self.jsx_dir,
+            shell=shell,
+        )
+
+        # update data-files in case this created new files
+        self.distribution.data_files = get_data_files()
+        assert not self.should_run(), 'JSX.run failed'
 
 
 def js_css_first(cls, strict=True):
@@ -258,6 +343,7 @@ def js_css_first(cls, strict=True):
             try:
                 self.run_command('js')
                 self.run_command('css')
+                self.run_command('jsx')
             except Exception:
                 if strict:
                     raise
@@ -284,6 +370,7 @@ class bdist_egg_disabled(bdist_egg):
 setup_args['cmdclass'] = {
     'js': NPM,
     'css': CSS,
+    'jsx': JSX,
     'build_py': js_css_first(build_py, strict=is_repo),
     'sdist': js_css_first(sdist, strict=True),
     'bdist_egg': bdist_egg if 'bdist_egg' in sys.argv else bdist_egg_disabled,

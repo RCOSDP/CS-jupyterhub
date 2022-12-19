@@ -21,7 +21,7 @@ const AddUser = (props) => {
     });
   };
 
-  var { addUsers, failRegexEvent, updateUsers, history } = props;
+  var { addUsers, updateUsers, history } = props;
 
   return (
     <>
@@ -60,7 +60,10 @@ const AddUser = (props) => {
                       placeholder="usernames separated by line"
                       data-testid="user-textarea"
                       onBlur={(e) => {
-                        let split_users = e.target.value.split("\n");
+                        let split_users = e.target.value
+                          .split("\n")
+                          .map((u) => u.trim())
+                          .filter((u) => u.length > 0);
                         setUsers(split_users);
                       }}
                     ></textarea>
@@ -88,30 +91,20 @@ const AddUser = (props) => {
                   data-testid="submit"
                   className="btn btn-primary"
                   onClick={() => {
-                    let filtered_users = users.filter(
-                      (e) =>
-                        e.length > 2 &&
-                        /[!@#$%^&*(),.?":{}|<>]/g.test(e) == false
-                    );
-                    if (filtered_users.length < users.length) {
-                      setUsers(filtered_users);
-                      failRegexEvent();
-                    }
-
-                    addUsers(filtered_users, admin)
+                    addUsers(users, admin)
                       .then((data) =>
                         data.status < 300
                           ? updateUsers(0, limit)
                               .then((data) => dispatchPageChange(data, 0))
                               .then(() => history.push("/"))
                               .catch(() =>
-                                setErrorAlert(`Failed to update users.`)
+                                setErrorAlert(`Failed to update users.`),
                               )
                           : setErrorAlert(
                               `Failed to create user. ${
                                 data.status == 409 ? "User already exists." : ""
-                              }`
-                            )
+                              }`,
+                            ),
                       )
                       .catch(() => setErrorAlert(`Failed to create user.`));
                   }}
@@ -129,7 +122,6 @@ const AddUser = (props) => {
 
 AddUser.propTypes = {
   addUsers: PropTypes.func,
-  failRegexEvent: PropTypes.func,
   updateUsers: PropTypes.func,
   history: PropTypes.shape({
     push: PropTypes.func,
