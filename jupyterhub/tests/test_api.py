@@ -307,6 +307,62 @@ async def test_get_users(app):
     assert r.status_code == 403
 
 
+@mark.user
+@mark.role
+async def test_get_users_with_named_servers(app):
+    db = app.db
+    app.allow_named_servers = True
+    app.named_server_limit_per_user = 5
+
+    r = await api_request(app, 'users', headers=auth_header(db, 'admin'))
+    assert r.status_code == 200
+
+    users = sorted(r.json(), key=lambda d: d['name'])
+    users = [normalize_user(u) for u in users]
+    user_model = {
+        'name': 'user',
+        'admin': False,
+        'roles': ['user'],
+        'auth_state': None,
+        'allow_named_servers': True,
+        'named_server_limit': 5,
+    }
+    print(
+        [
+            fill_user(
+                {
+                    'name': 'admin',
+                    'admin': True,
+                    'roles': ['admin', 'user'],
+                    'auth_state': None,
+                    'mail_address': None,
+                    'allow_named_servers': True,
+                    'named_server_limit': 5,
+                }
+            ),
+            fill_user(user_model),
+        ]
+    )
+    assert users == [
+        fill_user(
+            {
+                'name': 'admin',
+                'admin': True,
+                'roles': ['admin', 'user'],
+                'auth_state': None,
+                'mail_address': None,
+                'allow_named_servers': True,
+                'named_server_limit': 5,
+            }
+        ),
+        fill_user(user_model),
+    ]
+    r = await api_request(app, 'users', headers=auth_header(db, 'user'))
+    assert r.status_code == 403
+    app.allow_named_servers = False
+    app.named_server_limit_per_user = 0
+
+
 @fixture
 def default_page_limit(app):
     """Set and return low default page size for testing"""
@@ -634,6 +690,63 @@ async def test_get_user(app):
         headers=auth_header(app.db, name),
     )
     assert r.status_code == 404
+
+
+@mark.user
+@mark.role
+async def test_get_user_with_named_servers(app):
+    app.allow_named_servers = True
+    app.named_server_limit_per_user = 5
+    name = 'user'
+    # get own model
+    r = await api_request(app, 'users', name, headers=auth_header(app.db, name))
+    r.raise_for_status()
+    # admin request
+    r = await api_request(
+        app,
+        'users',
+        name,
+    )
+    r.raise_for_status()
+
+    user = normalize_user(r.json())
+    assert user == fill_user(
+        {
+            'name': name,
+            'roles': ['user'],
+            'auth_state': None,
+            'allow_named_servers': True,
+            'named_server_limit': 5,
+        }
+    )
+
+    # admin request, no such user
+    r = await api_request(
+        app,
+        'users',
+        'nosuchuser',
+    )
+    assert r.status_code == 404
+
+    # unauthorized request, no such user
+    r = await api_request(
+        app,
+        'users',
+        'nosuchuser',
+        headers=auth_header(app.db, name),
+    )
+    assert r.status_code == 404
+
+    # unauthorized request for existing user
+    r = await api_request(
+        app,
+        'users',
+        'admin',
+        headers=auth_header(app.db, name),
+    )
+    assert r.status_code == 404
+    app.allow_named_servers = False
+    app.named_server_limit_per_user = 0
 
 
 @mark.user
