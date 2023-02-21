@@ -253,6 +253,8 @@ def fill_user(model):
     model.setdefault('last_activity', TIMESTAMP)
     model.setdefault('mail_address', None)
     model.setdefault('servers', {})
+    model.setdefault('allow_named_servers', False)
+    model.setdefault('named_server_limit', 0)
     return model
 
 
@@ -275,18 +277,20 @@ async def test_get_users(app):
         'roles': ['user'],
         'auth_state': None,
     }
-    print([
-        fill_user(
-            {
-                'name': 'admin',
-                'admin': True,
-                'roles': ['admin', 'user'],
-                'auth_state': None,
-                'mail_address': None,
-            }
-        ),
-        fill_user(user_model),
-    ])
+    print(
+        [
+            fill_user(
+                {
+                    'name': 'admin',
+                    'admin': True,
+                    'roles': ['admin', 'user'],
+                    'auth_state': None,
+                    'mail_address': None,
+                }
+            ),
+            fill_user(user_model),
+        ]
+    )
     assert users == [
         fill_user(
             {
