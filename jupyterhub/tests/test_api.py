@@ -253,6 +253,8 @@ def fill_user(model):
     model.setdefault('last_activity', TIMESTAMP)
     model.setdefault('mail_address', None)
     model.setdefault('servers', {})
+    model.setdefault('allow_named_servers', False)
+    model.setdefault('named_server_limit', 0)
     return model
 
 
@@ -275,18 +277,20 @@ async def test_get_users(app):
         'roles': ['user'],
         'auth_state': None,
     }
-    print([
-        fill_user(
-            {
-                'name': 'admin',
-                'admin': True,
-                'roles': ['admin', 'user'],
-                'auth_state': None,
-                'mail_address': None,
-            }
-        ),
-        fill_user(user_model),
-    ])
+    print(
+        [
+            fill_user(
+                {
+                    'name': 'admin',
+                    'admin': True,
+                    'roles': ['admin', 'user'],
+                    'auth_state': None,
+                    'mail_address': None,
+                }
+            ),
+            fill_user(user_model),
+        ]
+    )
     assert users == [
         fill_user(
             {
@@ -301,6 +305,62 @@ async def test_get_users(app):
     ]
     r = await api_request(app, 'users', headers=auth_header(db, 'user'))
     assert r.status_code == 403
+
+
+@mark.user
+@mark.role
+async def test_get_users_with_named_servers(app):
+    db = app.db
+    app.allow_named_servers = True
+    app.named_server_limit_per_user = 5
+
+    r = await api_request(app, 'users', headers=auth_header(db, 'admin'))
+    assert r.status_code == 200
+
+    users = sorted(r.json(), key=lambda d: d['name'])
+    users = [normalize_user(u) for u in users]
+    user_model = {
+        'name': 'user',
+        'admin': False,
+        'roles': ['user'],
+        'auth_state': None,
+        'allow_named_servers': True,
+        'named_server_limit': 5,
+    }
+    print(
+        [
+            fill_user(
+                {
+                    'name': 'admin',
+                    'admin': True,
+                    'roles': ['admin', 'user'],
+                    'auth_state': None,
+                    'mail_address': None,
+                    'allow_named_servers': True,
+                    'named_server_limit': 5,
+                }
+            ),
+            fill_user(user_model),
+        ]
+    )
+    assert users == [
+        fill_user(
+            {
+                'name': 'admin',
+                'admin': True,
+                'roles': ['admin', 'user'],
+                'auth_state': None,
+                'mail_address': None,
+                'allow_named_servers': True,
+                'named_server_limit': 5,
+            }
+        ),
+        fill_user(user_model),
+    ]
+    r = await api_request(app, 'users', headers=auth_header(db, 'user'))
+    assert r.status_code == 403
+    app.allow_named_servers = False
+    app.named_server_limit_per_user = 0
 
 
 @fixture
@@ -535,11 +595,12 @@ async def test_get_self(app):
     db.add(oauth_client)
     db.commit()
     oauth_token = orm.APIToken(
-        user=u.orm_user,
-        oauth_client=oauth_client,
         token=token,
     )
     db.add(oauth_token)
+    oauth_token.user = u.orm_user
+    oauth_token.oauth_client = oauth_client
+
     db.commit()
     r = await api_request(
         app,
@@ -629,6 +690,63 @@ async def test_get_user(app):
         headers=auth_header(app.db, name),
     )
     assert r.status_code == 404
+
+
+@mark.user
+@mark.role
+async def test_get_user_with_named_servers(app):
+    app.allow_named_servers = True
+    app.named_server_limit_per_user = 5
+    name = 'user'
+    # get own model
+    r = await api_request(app, 'users', name, headers=auth_header(app.db, name))
+    r.raise_for_status()
+    # admin request
+    r = await api_request(
+        app,
+        'users',
+        name,
+    )
+    r.raise_for_status()
+
+    user = normalize_user(r.json())
+    assert user == fill_user(
+        {
+            'name': name,
+            'roles': ['user'],
+            'auth_state': None,
+            'allow_named_servers': True,
+            'named_server_limit': 5,
+        }
+    )
+
+    # admin request, no such user
+    r = await api_request(
+        app,
+        'users',
+        'nosuchuser',
+    )
+    assert r.status_code == 404
+
+    # unauthorized request, no such user
+    r = await api_request(
+        app,
+        'users',
+        'nosuchuser',
+        headers=auth_header(app.db, name),
+    )
+    assert r.status_code == 404
+
+    # unauthorized request for existing user
+    r = await api_request(
+        app,
+        'users',
+        'admin',
+        headers=auth_header(app.db, name),
+    )
+    assert r.status_code == 404
+    app.allow_named_servers = False
+    app.named_server_limit_per_user = 0
 
 
 @mark.user
@@ -2166,13 +2284,13 @@ def test_shutdown(app):
 
     def stop():
         stop.called = True
-        loop.call_later(1, real_stop)
+        loop.call_later(2, real_stop)
 
     real_cleanup = app.cleanup
 
     def cleanup():
         cleanup.called = True
-        return real_cleanup()
+        loop.call_later(1, real_cleanup)
 
     app.cleanup = cleanup
 

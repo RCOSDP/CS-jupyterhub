@@ -297,7 +297,9 @@ class APIHandler(BaseHandler):
             'created': isoformat(user.created),
             'last_activity': isoformat(user.last_activity),
             'auth_state': None,  # placeholder, filled in later
-            'mail_address': user.mail_address
+            'mail_address': user.mail_address,
+            'allow_named_servers': self.app.allow_named_servers,
+            'named_server_limit': self.app.named_server_limit_per_user,
         }
         access_map = {
             'read:users': {
@@ -315,7 +317,13 @@ class APIHandler(BaseHandler):
             'read:users:name': {'kind', 'name', 'admin'},
             'read:users:groups': {'kind', 'name', 'groups'},
             'read:users:activity': {'kind', 'name', 'last_activity'},
-            'read:servers': {'kind', 'name', 'servers'},
+            'read:servers': {
+                'kind',
+                'name',
+                'servers',
+                'allow_named_servers',
+                'named_server_limit',
+            },
             'read:roles:users': {'kind', 'name', 'roles', 'admin'},
             'admin:auth_state': {'kind', 'name', 'auth_state'},
         }
