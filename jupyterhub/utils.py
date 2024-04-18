@@ -424,7 +424,7 @@ def compare_token(compare, token):
 
 def url_escape_path(value):
     """Escape a value to be used in URLs, cookies, etc."""
-    return quote(value, safe='@~')
+    return quote(value, safe='@~=')
 
 
 def url_path_join(*pieces):
