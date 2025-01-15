@@ -1,4 +1,5 @@
 """Database utilities for JupyterHub"""
+
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 # Based on pgcontents.utils.migrate, used under the Apache license.
@@ -94,7 +95,7 @@ def backup_db_file(db_file, log=None):
         backup_db_file = f'{db_file}.{timestamp}.{i}'
     #
     if os.path.exists(backup_db_file):
-        raise OSError("backup db file already exists: %s" % backup_db_file)
+        raise OSError(f"backup db file already exists: {backup_db_file}")
     if log:
         log.info("Backing up %s => %s", db_file, backup_db_file)
     shutil.copy(db_file, backup_db_file)
@@ -120,9 +121,7 @@ def upgrade_if_needed(db_url, backup=True, log=None):
     if urlinfo.password:
         # avoid logging the database password
         urlinfo = urlinfo._replace(
-            netloc='{}:[redacted]@{}:{}'.format(
-                urlinfo.username, urlinfo.hostname, urlinfo.port
-            )
+            netloc=f'{urlinfo.username}:[redacted]@{urlinfo.hostname}:{urlinfo.port}'
         )
         db_log_url = urlinfo.geturl()
     else:
@@ -168,7 +167,7 @@ def main(args=None):
     # to subcommands
     choices = ['shell', 'alembic']
     if not args or args[0] not in choices:
-        print("Select a command from: %s" % ', '.join(choices))
+        print("Select a command from: {}".format(', '.join(choices)))
         return 1
     cmd, args = args[0], args[1:]
 

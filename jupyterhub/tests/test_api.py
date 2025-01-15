@@ -1,13 +1,18 @@
 """Tests for the REST API."""
+
 import asyncio
 import json
 import re
 import sys
 import uuid
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from unittest import mock
-from urllib.parse import quote, urlparse, urlunparse
+from urllib.parse import parse_qs, quote, urlparse
 
+import pytest
+from dateutil.parser import parse as parse_date
 from pytest import fixture, mark
 from tornado.httputil import url_concat
 
@@ -59,7 +64,7 @@ async def test_auth_api(app):
         app,
         'authorizations/token',
         api_token,
-        headers={'Authorization': 'token: %s' % user.cookie_id},
+        headers={'Authorization': f'token: {user.cookie_id}'},
     )
     assert r.status_code == 403
 
@@ -95,108 +100,73 @@ async def test_post_content_type(app, content_type, status):
     assert r.status_code == status
 
 
+@mark.parametrize("xsrf_in_url", [True, False, "invalid"])
 @mark.parametrize(
-    "host, referer, extraheaders, status",
+    "method, path",
     [
-        ('$host', '$url', {}, 200),
-        (None, None, {}, 200),
-        (None, 'null', {}, 403),
-        (None, 'http://attack.com/csrf/vulnerability', {}, 403),
-        ('$host', {"path": "/user/someuser"}, {}, 403),
-        ('$host', {"path": "{path}/foo/bar/subpath"}, {}, 200),
-        # mismatch host
-        ("mismatch.com", "$url", {}, 403),
-        # explicit host, matches
-        ("fake.example", {"netloc": "fake.example"}, {}, 200),
-        # explicit port, matches implicit port
-        ("fake.example:80", {"netloc": "fake.example"}, {}, 200),
-        # explicit port, mismatch
-        ("fake.example:81", {"netloc": "fake.example"}, {}, 403),
-        # implicit ports, mismatch proto
-        ("fake.example", {"netloc": "fake.example", "scheme": "https"}, {}, 403),
-        # explicit ports, match
-        ("fake.example:81", {"netloc": "fake.example:81"}, {}, 200),
-        # Test proxy protocol defined headers taken into account by utils.get_browser_protocol
-        (
-            "fake.example",
-            {"netloc": "fake.example", "scheme": "https"},
-            {'X-Scheme': 'https'},
-            200,
-        ),
-        (
-            "fake.example",
-            {"netloc": "fake.example", "scheme": "https"},
-            {'X-Forwarded-Proto': 'https'},
-            200,
-        ),
-        (
-            "fake.example",
-            {"netloc": "fake.example", "scheme": "https"},
-            {
-                'Forwarded': 'host=fake.example;proto=https,for=1.2.34;proto=http',
-                'X-Scheme': 'http',
-            },
-            200,
-        ),
-        (
-            "fake.example",
-            {"netloc": "fake.example", "scheme": "https"},
-            {
-                'Forwarded': 'host=fake.example;proto=http,for=1.2.34;proto=http',
-                'X-Scheme': 'https',
-            },
-            403,
-        ),
-        ("fake.example", {"netloc": "fake.example"}, {'X-Scheme': 'https'}, 403),
-        ("fake.example", {"netloc": "fake.example"}, {'X-Scheme': 'https, http'}, 403),
+        ("GET", "user"),
+        ("POST", "users/{username}/tokens"),
     ],
 )
-async def test_cors_check(request, app, host, referer, extraheaders, status):
-    url = ujoin(public_host(app), app.hub.base_url)
-    real_host = urlparse(url).netloc
-    if host == "$host":
-        host = real_host
+async def test_xsrf_check(app, username, method, path, xsrf_in_url):
+    cookies = await app.login_user(username)
+    xsrf = cookies['_xsrf']
+    if xsrf_in_url == "invalid":
+        cookies.pop("_xsrf")
+        # a valid old-style tornado xsrf token is no longer valid
+        xsrf = cookies['_xsrf'] = (
+            "2|7329b149|d837ced983e8aac7468bc7a61ce3d51a|1708610065"
+        )
 
-    if referer == '$url':
-        referer = url
-    elif isinstance(referer, dict):
-        parsed_url = urlparse(url)
-        # apply {}
-        url_ns = {key: getattr(parsed_url, key) for key in parsed_url._fields}
-        for key, value in referer.items():
-            referer[key] = value.format(**url_ns)
-        referer = urlunparse(parsed_url._replace(**referer))
-
-    # disable default auth header, cors is for cookie auth
-    headers = {"Authorization": ""}
-    if host is not None:
-        headers['X-Forwarded-Host'] = host
-    if referer is not None:
-        headers['Referer'] = referer
-    headers.update(extraheaders)
-
-    # add admin user
-    user = find_user(app.db, 'admin')
-    if user is None:
-        user = add_user(app.db, name='admin', admin=True)
-    cookies = await app.login_user('admin')
-
-    # test custom forwarded_host_header behavior
-    app.forwarded_host_header = 'X-Forwarded-Host'
-
-    # reset the config after the test to avoid leaking state
-    def reset_header():
-        app.forwarded_host_header = ""
-
-    request.addfinalizer(reset_header)
+    url = path.format(username=username)
+    if xsrf_in_url:
+        url = f"{url}?_xsrf={xsrf}"
 
     r = await api_request(
         app,
-        'users',
-        headers=headers,
+        url,
+        noauth=True,
         cookies=cookies,
     )
-    assert r.status_code == status
+    if xsrf_in_url is True:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 403
+
+
+@mark.parametrize(
+    "auth, expected_message",
+    [
+        ("", "Missing or invalid credentials"),
+        ("cookie_no_xsrf", "'_xsrf' argument missing from GET"),
+        ("cookie_xsrf_mismatch", "XSRF cookie does not match GET argument"),
+        ("token_no_scope", "requires any of [list:users]"),
+        ("cookie_no_scope", "requires any of [list:users]"),
+    ],
+)
+async def test_permission_error_messages(app, user, auth, expected_message):
+    # 1. no credentials, should be 403 and not mention xsrf
+
+    url = public_url(app, path="hub/api/users")
+
+    kwargs = {}
+    kwargs["headers"] = headers = {}
+    kwargs["params"] = params = {}
+    if auth == "token_no_scope":
+        token = user.new_api_token()
+        headers["Authorization"] = f"Bearer {token}"
+    elif "cookie" in auth:
+        cookies = kwargs["cookies"] = await app.login_user(user.name)
+        if auth == "cookie_no_scope":
+            params["_xsrf"] = cookies["_xsrf"]
+        if auth == "cookie_xsrf_mismatch":
+            params["_xsrf"] = "somethingelse"
+    headers['Sec-Fetch-Mode'] = 'cors'
+    r = await async_requests.get(url, **kwargs)
+    assert r.status_code == 403
+    response = r.json()
+    message = response["message"]
+    assert expected_message in message
 
 
 # --------------
@@ -380,22 +350,23 @@ def max_page_limit(app):
 
 
 @mark.user
-@mark.role
 @mark.parametrize(
-    "n, offset, limit, accepts_pagination, expected_count",
+    "n, offset, limit, accepts_pagination, expected_count, include_stopped_servers",
     [
-        (10, None, None, False, 10),
-        (10, None, None, True, 10),
-        (10, 5, None, True, 5),
-        (10, 5, None, False, 5),
-        (10, 5, 1, True, 1),
-        (10, 10, 10, True, 0),
+        (10, None, None, False, 10, False),
+        (10, None, None, True, 10, False),
+        (10, 5, None, True, 5, False),
+        (10, 5, None, False, 5, False),
+        (10, None, 5, True, 5, True),
+        (10, 5, 1, True, 1, True),
+        (10, 10, 10, True, 0, False),
         (  # default page limit, pagination expected
             30,
             None,
             None,
             True,
             'default',
+            False,
         ),
         (
             # default max page limit, pagination not expected
@@ -404,6 +375,7 @@ def max_page_limit(app):
             None,
             False,
             'max',
+            False,
         ),
         (
             # limit exceeded
@@ -412,6 +384,7 @@ def max_page_limit(app):
             500,
             False,
             'max',
+            False,
         ),
     ],
 )
@@ -424,6 +397,7 @@ async def test_get_users_pagination(
     expected_count,
     default_page_limit,
     max_page_limit,
+    include_stopped_servers,
 ):
     db = app.db
 
@@ -434,14 +408,25 @@ async def test_get_users_pagination(
     # populate users
     usernames = []
 
+    groups = []
+    for i in range(3):
+        group = orm.Group(name=f"pagination-{i}")
+        db.add(group)
+    db.commit()
     existing_users = db.query(orm.User).order_by(orm.User.id.asc())
     usernames.extend(u.name for u in existing_users)
 
     for i in range(n - existing_users.count()):
         name = new_username()
         usernames.append(name)
-        add_user(db, app, name=name)
-    print(f"{db.query(orm.User).count()} total users")
+        user = add_user(db, app, name=name)
+        # add some users to groups
+        # make sure group membership doesn't affect pagination count
+        if i % 2:
+            user.groups = groups
+    db.commit()
+
+    total_users = db.query(orm.User).count()
 
     url = 'users'
     params = {}
@@ -450,6 +435,11 @@ async def test_get_users_pagination(
     if limit:
         params['limit'] = limit
     url = url_concat(url, params)
+    if include_stopped_servers:
+        # assumes limit is set. There doesn't seem to be a way to set valueless query
+        # params using url_cat
+        url += "&include_stopped_servers"
+
     headers = auth_header(db, 'admin')
     if accepts_pagination:
         headers['Accept'] = PAGINATION_MEDIA_TYPE
@@ -462,7 +452,13 @@ async def test_get_users_pagination(
             "_pagination",
         }
         pagination = response["_pagination"]
+        if include_stopped_servers and pagination["next"]:
+            next_query = parse_qs(
+                urlparse(pagination["next"]["url"]).query, keep_blank_values=True
+            )
+            assert "include_stopped_servers" in next_query
         users = response["items"]
+        assert pagination["total"] == total_users
     else:
         users = response
     assert len(users) == expected_count
@@ -491,6 +487,7 @@ async def test_get_users_state_filter(app, state):
     has_two_inactive = add_user(db, app=app, name='has_two_inactive')
     # has_zero: no Spawners registered at all
     has_zero = add_user(db, app=app, name='has_zero')
+    total_users = db.query(orm.User).count()
 
     test_usernames = {
         "has_one_active",
@@ -533,14 +530,26 @@ async def test_get_users_state_filter(app, state):
     add_spawner(has_one_active, active=True, ready=False)
     add_spawner(has_one_active, "inactive", active=False)
 
-    r = await api_request(app, f'users?state={state}')
+    r = await api_request(
+        app, f'users?state={state}', headers={"Accept": PAGINATION_MEDIA_TYPE}
+    )
     if state == "invalid":
         assert r.status_code == 400
         return
     assert r.status_code == 200
 
-    usernames = sorted(u["name"] for u in r.json() if u["name"] in test_usernames)
+    response = r.json()
+    users = response["items"]
+    page = response["_pagination"]
+
+    usernames = sorted(u["name"] for u in users if u["name"] in test_usernames)
     assert usernames == expected
+    if state == "ready":
+        # "ready" can't actually get a correct count because it has post-filtering applied
+        # but it has an upper bound
+        assert page["total"] >= len(users)
+    else:
+        assert page["total"] == len(users)
 
 
 @mark.user
@@ -580,6 +589,87 @@ async def test_get_users_name_filter(app):
 
 
 @mark.user
+@pytest.mark.parametrize("direction", ["asc", "desc"])
+@pytest.mark.parametrize("sort", ["id", "name", "last_activity"])
+async def test_get_users_sort(app, sort, direction):
+    db = app.db
+
+    # 4 users, different order depending on sort field
+    orders = {
+        "id": ["1", "2", "3", "4"],
+        "name": ["a", "b", "c", "d"],
+        "last_activity": ["never", "early", "middle", "late"],
+    }
+    expected_order = orders[sort]
+    sort_param = sort
+    if direction == "desc":
+        expected_order.reverse()
+        sort_param = "-" + sort
+
+    # create the users, encode the expected sort order in the names
+    u = add_user(db, app=app, name='xyz-c-1-middle')
+    u.last_activity = utcnow() - timedelta(hours=1)
+    u = add_user(db, app=app, name='xyz-a-2-late')
+    u.last_activity = utcnow()
+    u = add_user(db, app=app, name='xyz-d-3-never')
+    u.last_activity = None
+    u = add_user(db, app=app, name='xyz-b-4-early')
+    u.last_activity = utcnow() - timedelta(days=1)
+    app.db.commit()
+
+    @dataclass
+    class UserName:
+        """Parse username so we can get the current sort field"""
+
+        id: str
+        name: str
+        last_activity: str
+
+        def __init__(self, username):
+            prefix, self.name, self.id, self.last_activity = username.split("-")
+
+    # fetch 4 users in 2 pages of 2 items each
+    # to ensure offset is handled correctly
+    params = {
+        "name_filter": "xyz",
+        "sort": sort_param,
+        "limit": 2,
+    }
+
+    r = await api_request(
+        app, 'users', params=params, headers={"Accept": PAGINATION_MEDIA_TYPE}
+    )
+    assert r.status_code == 200
+    page_1 = r.json()
+
+    assert page_1["_pagination"]["total"] == 4
+    users = page_1["items"]
+    assert len(users) == 2
+
+    # next page
+    params["offset"] = page_1["_pagination"]["next"]["offset"]
+    r = await api_request(
+        app, 'users', params=params, headers={"Accept": PAGINATION_MEDIA_TYPE}
+    )
+    assert r.status_code == 200
+    page_2 = r.json()
+
+    # turn user dicts into list of only the relevant component,
+    # e.g. { "name": "xyz-a-2-late" } -> "late"
+    users.extend(page_2["items"])
+    usernames = [UserName(u["name"]) for u in users]
+    sorted_fields = [getattr(u, sort) for u in usernames]
+    assert sorted_fields == expected_order
+
+
+async def test_get_users_sort_invalid(app):
+    r = await api_request(app, "users", params={"sort": "servers"})
+    assert r.status_code == 400
+    r = await api_request(app, "users", params={"sort": "--id"})
+    assert r.status_code == 400
+
+
+@mark.user
 async def test_get_self(app):
     db = app.db
 
@@ -610,6 +700,7 @@ async def test_get_self(app):
     r.raise_for_status()
     model = r.json()
     assert model['name'] == u.name
+    assert model["token_id"] == oauth_token.api_id
 
     # invalid auth gets 403
     r = await api_request(
@@ -815,16 +906,25 @@ async def test_add_multi_user(app):
 
 @mark.user
 @mark.role
-async def test_add_multi_user_admin(app):
+@mark.parametrize("is_admin", [True, False])
+async def test_add_multi_user_admin(app, create_user_with_scopes, is_admin):
     db = app.db
+    requester = create_user_with_scopes("admin:users")
+    requester.admin = is_admin
+    db.commit()
     names = ['c', 'd']
     r = await api_request(
         app,
         'users',
         method='post',
         data=json.dumps({'usernames': names, 'admin': True}),
+        name=requester.name,
     )
-    assert r.status_code == 201
+    if is_admin:
+        assert r.status_code == 201
+    else:
+        assert r.status_code == 403
+        return
     reply = r.json()
     r_names = [user['name'] for user in reply]
     assert names == r_names
@@ -862,13 +962,26 @@ async def test_add_user_duplicate(app):
 
 @mark.user
 @mark.role
-async def test_add_admin(app):
+@mark.parametrize("is_admin", [True, False])
+async def test_add_admin(app, create_user_with_scopes, is_admin):
     db = app.db
     name = 'newadmin'
+    user = create_user_with_scopes("admin:users")
+    user.admin = is_admin
+    db.commit()
     r = await api_request(
-        app, 'users', name, method='post', data=json.dumps({'admin': True})
+        app,
+        'users',
+        name,
+        method='post',
+        data=json.dumps({'admin': True}),
+        name=user.name,
     )
-    assert r.status_code == 201
+    if is_admin:
+        assert r.status_code == 201
+    else:
+        assert r.status_code == 403
+        return
     user = find_user(db, name)
     assert user is not None
     assert user.name == name
@@ -888,9 +1001,14 @@ async def test_delete_user(app):
 
 @mark.user
 @mark.role
-async def test_make_admin(app):
+@mark.parametrize("is_admin", [True, False])
+async def test_user_make_admin(app, create_user_with_scopes, is_admin):
     db = app.db
-    name = 'admin2'
+    requester = create_user_with_scopes('admin:users')
+    requester.admin = is_admin
+    db.commit()
+
+    name = new_username("make_admin")
     r = await api_request(app, 'users', name, method='post')
     assert r.status_code == 201
     user = find_user(db, name)
@@ -901,16 +1019,56 @@ async def test_make_admin(app):
     assert orm.Role.find(db, 'admin') not in user.roles
 
     r = await api_request(
-        app, 'users', name, method='patch', data=json.dumps({'admin': True})
+        app,
+        'users',
+        name,
+        method='patch',
+        data=json.dumps({'admin': True}),
+        name=requester.name,
     )
-
-    assert r.status_code == 200
+    if is_admin:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 403
+        return
     user = find_user(db, name)
     assert user is not None
     assert user.name == name
     assert user.admin
     assert orm.Role.find(db, 'user') in user.roles
     assert orm.Role.find(db, 'admin') in user.roles
+
+
+@mark.user
+@mark.parametrize("requester_is_admin", [True, False])
+@mark.parametrize("user_is_admin", [True, False])
+async def test_user_set_name(
+    app, user, create_user_with_scopes, requester_is_admin, user_is_admin
+):
+    db = app.db
+    requester = create_user_with_scopes('admin:users')
+    requester.admin = requester_is_admin
+    user.admin = user_is_admin
+    db.commit()
+    new_name = new_username()
+
+    r = await api_request(
+        app,
+        'users',
+        user.name,
+        method='patch',
+        data=json.dumps({'name': new_name}),
+        name=requester.name,
+    )
+    if requester_is_admin or not user_is_admin:
+        assert r.status_code == 200
+    else:
+        assert r.status_code == 403
+        return
+    renamed = find_user(db, new_name)
+    assert renamed is not None
+    assert renamed.name == new_name
+    assert renamed.id == user.id
 
 
 @mark.user
@@ -1006,7 +1164,7 @@ async def test_spawn(app):
     status = await app_user.spawner.poll()
     assert status is None
 
-    assert spawner.server.base_url == ujoin(app.base_url, 'user/%s' % name) + '/'
+    assert spawner.server.base_url == ujoin(app.base_url, f'user/{name}') + '/'
     url = public_url(app, user)
     kwargs = {}
     if app.internal_ssl:
@@ -1268,7 +1426,7 @@ async def test_progress(request, app, no_patience, slow_spawn):
     assert evt == {
         'progress': 100,
         'message': f'Server ready at {url}',
-        'html_message': 'Server ready at <a href="{0}">{0}</a>'.format(url),
+        'html_message': f'Server ready at <a href="{url}">{url}</a>',
         'url': url,
         'ready': True,
     }
@@ -1316,6 +1474,92 @@ async def test_progress_ready(request, app):
     assert evt['progress'] == 100
     assert evt['ready']
     assert evt['url'] == app_user.url
+
+
+async def test_progress_ready_hook_async_func(request, app):
+    """Test progress ready hook in Spawner class with an async function"""
+    db = app.db
+    name = 'saga'
+    app_user = add_user(db, app=app, name=name)
+    html_message = 'customized html message'
+    spawner = app_user.spawner
+
+    async def custom_progress_ready_hook(spawner, ready_event):
+        ready_event['html_message'] = html_message
+        return ready_event
+
+    spawner.progress_ready_hook = custom_progress_ready_hook
+    r = await api_request(app, 'users', name, 'server', method='post')
+    r.raise_for_status()
+    r = await api_request(app, 'users', name, 'server/progress', stream=True)
+    r.raise_for_status()
+    request.addfinalizer(r.close)
+    assert r.headers['content-type'] == 'text/event-stream'
+    ex = async_requests.executor
+    line_iter = iter(r.iter_lines(decode_unicode=True))
+    evt = await ex.submit(next_event, line_iter)
+    assert evt['progress'] == 100
+    assert evt['ready']
+    assert evt['url'] == app_user.url
+    assert evt['html_message'] == html_message
+
+
+async def test_progress_ready_hook_sync_func(request, app):
+    """Test progress ready hook in Spawner class with a sync function"""
+    db = app.db
+    name = 'saga'
+    app_user = add_user(db, app=app, name=name)
+    html_message = 'customized html message'
+    spawner = app_user.spawner
+
+    def custom_progress_ready_hook(spawner, ready_event):
+        ready_event['html_message'] = html_message
+        return ready_event
+
+    spawner.progress_ready_hook = custom_progress_ready_hook
+    r = await api_request(app, 'users', name, 'server', method='post')
+    r.raise_for_status()
+    r = await api_request(app, 'users', name, 'server/progress', stream=True)
+    r.raise_for_status()
+    request.addfinalizer(r.close)
+    assert r.headers['content-type'] == 'text/event-stream'
+    ex = async_requests.executor
+    line_iter = iter(r.iter_lines(decode_unicode=True))
+    evt = await ex.submit(next_event, line_iter)
+    assert evt['progress'] == 100
+    assert evt['ready']
+    assert evt['url'] == app_user.url
+    assert evt['html_message'] == html_message
+
+
+async def test_progress_ready_hook_async_func_exception(request, app):
+    """Test progress ready hook in Spawner class with an exception in
+    an async function
+    """
+    db = app.db
+    name = 'saga'
+    app_user = add_user(db, app=app, name=name)
+    html_message = f'Server ready at <a href="{app_user.url}">{app_user.url}</a>'
+    spawner = app_user.spawner
+
+    async def custom_progress_ready_hook(spawner, ready_event):
+        ready_event["html_message"] = "."
+        raise Exception()
+
+    spawner.progress_ready_hook = custom_progress_ready_hook
+    r = await api_request(app, 'users', name, 'server', method='post')
+    r.raise_for_status()
+    r = await api_request(app, 'users', name, 'server/progress', stream=True)
+    r.raise_for_status()
+    request.addfinalizer(r.close)
+    assert r.headers['content-type'] == 'text/event-stream'
+    ex = async_requests.executor
+    line_iter = iter(r.iter_lines(decode_unicode=True))
+    evt = await ex.submit(next_event, line_iter)
+    assert evt['progress'] == 100
+    assert evt['ready']
+    assert evt['url'] == app_user.url
+    assert evt['html_message'] == html_message
 
 
 async def test_progress_bad(request, app, bad_spawn):
@@ -1367,7 +1611,7 @@ async def test_progress_bad_slow(request, app, no_patience, slow_bad_spawn):
 async def progress_forever():
     """progress function that yields messages forever"""
     for i in range(1, 10):
-        yield {'progress': i, 'message': 'Stage %s' % i}
+        yield {'progress': i, 'message': f'Stage {i}'}
         # wait a long time before the next event
         await asyncio.sleep(10)
 
@@ -1512,23 +1756,20 @@ async def test_start_stop_race(app, no_patience, slow_spawn):
     r = await api_request(app, 'users', user.name, 'server', method='post')
     assert r.status_code == 202
     assert spawner.pending == 'spawn'
+    spawn_future = spawner._spawn_future
     # additional spawns while spawning shouldn't trigger a new spawn
     with mock.patch.object(spawner, 'start') as m:
         r = await api_request(app, 'users', user.name, 'server', method='post')
     assert r.status_code == 202
     assert m.call_count == 0
 
-    # stop while spawning is not okay
-    r = await api_request(app, 'users', user.name, 'server', method='delete')
-    assert r.status_code == 400
-    while not spawner.ready:
-        await asyncio.sleep(0.1)
-
+    # stop while spawning is okay now
     spawner.delay = 3
-    # stop the spawner
     r = await api_request(app, 'users', user.name, 'server', method='delete')
     assert r.status_code == 202
     assert spawner.pending == 'stop'
+    assert spawn_future.cancelled()
+    assert spawner._spawn_future is None
     # make sure we get past deleting from the proxy
     await asyncio.sleep(1)
     # additional stops while stopping shouldn't trigger a new stop
@@ -1681,6 +1922,46 @@ async def test_get_new_token(app, headers, status, note, expires_in):
     assert r.status_code == 404
 
 
+@pytest.mark.parametrize(
+    "expires_in_max, expires_in, expected",
+    [
+        (86400, None, 86400),
+        (86400, 86400, 86400),
+        (86400, 86401, 'error'),
+        (3600, 100, 100),
+        (None, None, None),
+        (None, 86400, 86400),
+    ],
+)
+async def test_token_expires_in_max(app, user, expires_in_max, expires_in, expected):
+    options = {
+        "expires_in": expires_in,
+    }
+    # request a new token
+    with mock.patch.dict(
+        app.tornado_settings, {"token_expires_in_max_seconds": expires_in_max}
+    ):
+        r = await api_request(
+            app,
+            f'users/{user.name}/tokens',
+            method='post',
+            data=json.dumps(options),
+        )
+    if expected == 'error':
+        assert r.status_code == 400
+        assert f"must not exceed {expires_in_max}" in r.json()["message"]
+        return
+    else:
+        assert r.status_code == 201
+    token_model = r.json()
+    if expected is None:
+        assert token_model["expires_at"] is None
+    else:
+        expected_expires_at = utcnow() + timedelta(seconds=expected)
+        expires_at = parse_date(token_model["expires_at"])
+        assert abs((expires_at - expected_expires_at).total_seconds()) < 30
+
+
 @mark.parametrize(
     "as_user, for_user, status",
     [
@@ -1696,7 +1977,7 @@ async def test_token_for_user(app, as_user, for_user, status):
     if for_user != 'missing':
         for_user_obj = add_user(app.db, app, name=for_user)
     data = {'username': for_user}
-    headers = {'Authorization': 'token %s' % u.new_api_token()}
+    headers = {'Authorization': f'token {u.new_api_token()}'}
     r = await api_request(
         app,
         'users',
@@ -1720,7 +2001,7 @@ async def test_token_for_user(app, as_user, for_user, status):
     if for_user == as_user:
         note = 'Requested via api'
     else:
-        note = 'Requested via api by user %s' % as_user
+        note = f'Requested via api by user {as_user}'
     assert reply['note'] == note
 
     # delete the token
@@ -1791,7 +2072,7 @@ async def test_token_list(app, as_user, for_user, status):
     u = add_user(app.db, app, name=as_user)
     if for_user != 'missing':
         for_user_obj = add_user(app.db, app, name=for_user)
-    headers = {'Authorization': 'token %s' % u.new_api_token()}
+    headers = {'Authorization': f'token {u.new_api_token()}'}
     r = await api_request(app, 'users', for_user, 'tokens', headers=headers)
     assert r.status_code == status
     if status != 200:
@@ -1833,8 +2114,20 @@ async def test_groups_list(app):
     r.raise_for_status()
     reply = r.json()
     assert reply == [
-        {'kind': 'group', 'name': 'alphaflight', 'users': [], 'roles': []},
-        {'kind': 'group', 'name': 'betaflight', 'users': [], 'roles': []},
+        {
+            'kind': 'group',
+            'name': 'alphaflight',
+            'users': [],
+            'roles': [],
+            'properties': {},
+        },
+        {
+            'kind': 'group',
+            'name': 'betaflight',
+            'users': [],
+            'roles': [],
+            'properties': {},
+        },
     ]
 
     # Test offset for pagination
@@ -1842,7 +2135,15 @@ async def test_groups_list(app):
     r.raise_for_status()
     reply = r.json()
     assert r.status_code == 200
-    assert reply == [{'kind': 'group', 'name': 'betaflight', 'users': [], 'roles': []}]
+    assert reply == [
+        {
+            'kind': 'group',
+            'name': 'betaflight',
+            'users': [],
+            'roles': [],
+            'properties': {},
+        }
+    ]
 
     r = await api_request(app, "groups?offset=10")
     r.raise_for_status()
@@ -1854,13 +2155,29 @@ async def test_groups_list(app):
     r.raise_for_status()
     reply = r.json()
     assert r.status_code == 200
-    assert reply == [{'kind': 'group', 'name': 'alphaflight', 'users': [], 'roles': []}]
+    assert reply == [
+        {
+            'kind': 'group',
+            'name': 'alphaflight',
+            'users': [],
+            'roles': [],
+            'properties': {},
+        }
+    ]
 
     # 0 is rounded up to 1
     r = await api_request(app, "groups?limit=0")
     r.raise_for_status()
     reply = r.json()
-    assert reply == [{'kind': 'group', 'name': 'alphaflight', 'users': [], 'roles': []}]
+    assert reply == [
+        {
+            'kind': 'group',
+            'name': 'alphaflight',
+            'users': [],
+            'roles': [],
+            'properties': {},
+        }
+    ]
 
 
 @mark.group
@@ -1889,7 +2206,7 @@ async def test_group_get(app):
     app.db.commit()
     group = orm.Group.find(app.db, name='alphaflight')
     user = add_user(app.db, app=app, name='sasquatch')
-    group.users.append(user)
+    group.users.append(user.orm_user)
     app.db.commit()
 
     r = await api_request(app, 'groups/runaways')
@@ -1903,6 +2220,7 @@ async def test_group_get(app):
         'name': 'alphaflight',
         'users': ['sasquatch'],
         'roles': [],
+        'properties': {},
     }
 
 
@@ -1990,9 +2308,63 @@ async def test_group_add_delete_users(app):
     assert sorted(u.name for u in group.users) == sorted(names[2:])
 
 
+@mark.parametrize(
+    "properties",
+    [
+        "",
+        "str",
+        5,
+        ["list"],
+    ],
+)
+@mark.group
+async def test_group_properties_invalid(app, group, properties):
+    if properties:
+        json_properties = json.dumps(properties)
+    else:
+        json_properties = ""
+    have_properties = {"a": 5}
+    group.properties = have_properties
+    app.db.commit()
+    r = await api_request(
+        app, f"groups/{group.name}/properties", method='put', data=json_properties
+    )
+    assert r.status_code == 400
+    # invalid requests didn't change properties
+    assert group.properties == have_properties
+
+
+@mark.group
+async def test_group_properties(app, group):
+    db = app.db
+    # must specify properties
+    properties = {
+        "str": "x",
+        "int": 5,
+        "list": ["a"],
+    }
+    r = await api_request(
+        app,
+        f"groups/{group.name}/properties",
+        method='put',
+        data=json.dumps(properties),
+    )
+    r.raise_for_status()
+    assert group.properties == properties
+
+    r = await api_request(
+        app,
+        f"groups/{group.name}/properties",
+        method='put',
+        data="{}",
+    )
+    r.raise_for_status()
+    assert group.properties == {}
+
+
 @mark.group
 async def test_auth_managed_groups(request, app, group, user):
-    group.users.append(user)
+    group.users.append(user.orm_user)
     app.db.commit()
     app.authenticator.manage_groups = True
     request.addfinalizer(lambda: setattr(app.authenticator, "manage_groups", False))
@@ -2058,7 +2430,7 @@ async def test_get_services(app, mockservice_url):
 async def test_get_service(app, mockservice_url):
     mockservice = mockservice_url
     db = app.db
-    r = await api_request(app, 'services/%s' % mockservice.name)
+    r = await api_request(app, f"services/{mockservice.name}")
     r.raise_for_status()
     assert r.status_code == 200
 
@@ -2077,19 +2449,271 @@ async def test_get_service(app, mockservice_url):
     }
     r = await api_request(
         app,
-        'services/%s' % mockservice.name,
-        headers={'Authorization': 'token %s' % mockservice.api_token},
+        f"services/{mockservice.name}",
+        headers={'Authorization': f'token {mockservice.api_token}'},
     )
     r.raise_for_status()
+
     r = await api_request(
-        app, 'services/%s' % mockservice.name, headers=auth_header(db, 'user')
+        app, f"services/{mockservice.name}", headers=auth_header(db, 'user')
     )
     assert r.status_code == 403
 
+    r = await api_request(app, "services/nosuchservice")
+    assert r.status_code == 404
+
+
+@pytest.fixture
+def service_admin_user(create_user_with_scopes):
+    return create_user_with_scopes('admin:services')
+
+
+@mark.services
+async def test_create_service(app, service_admin_user, service_name, service_data):
+    db = app.db
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(service_data),
+        method='post',
+    )
+
+    r.raise_for_status()
+    assert r.status_code == 201
+    assert r.json()['name'] == service_name
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is not None
+
+    oath_client = (
+        db.query(orm.OAuthClient)
+        .filter_by(identifier=service_data['oauth_client_id'])
+        .first()
+    )
+    assert oath_client.redirect_uri == service_data['oauth_redirect_uri']
+
+    assert service_name in app._service_map
+    assert (
+        app._service_map[service_name].oauth_no_confirm
+        == service_data['oauth_no_confirm']
+    )
+
+
+@mark.services
+async def test_create_service_no_role(app, service_name, service_data):
+    db = app.db
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, 'user'),
+        data=json.dumps(service_data),
+        method='post',
+    )
+
+    assert r.status_code == 403
+
+
+@mark.services
+async def test_create_service_conflict(
+    app, service_admin_user, mockservice, service_data, service_name
+):
+    db = app.db
+    app.services = [{'name': service_name}]
+    app.init_services()
+
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(service_data),
+        method='post',
+    )
+
+    assert r.status_code == 409
+
+
+@mark.services
+async def test_create_service_duplication(
+    app, service_admin_user, service_name, service_data
+):
+    db = app.db
+
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(service_data),
+        method='post',
+    )
+    assert r.status_code == 201
+
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(service_data),
+        method='post',
+    )
+    assert r.status_code == 409
+
+
+@mark.services
+async def test_create_managed_service(
+    app, service_admin_user, service_name, service_data
+):
+    db = app.db
+    managed_service_data = deepcopy(service_data)
+    managed_service_data['command'] = ['foo']
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(managed_service_data),
+        method='post',
+    )
+
+    assert r.status_code == 400
+    assert 'Can not create managed service' in r.json()['message']
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is None
+
+
+@mark.services
+async def test_create_admin_service(app, admin_user, service_name, service_data):
+    db = app.db
+    managed_service_data = deepcopy(service_data)
+    managed_service_data['admin'] = True
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, admin_user.name),
+        data=json.dumps(managed_service_data),
+        method='post',
+    )
+
+    assert r.status_code == 201
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is not None
+
+
+@mark.services
+async def test_create_admin_service_without_admin_right(
+    app, service_admin_user, service_data, service_name
+):
+    db = app.db
+    managed_service_data = deepcopy(service_data)
+    managed_service_data['admin'] = True
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(managed_service_data),
+        method='post',
+    )
+
+    assert r.status_code == 400
+    assert 'Not assigning requested scopes' in r.json()['message']
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is None
+
+
+@mark.services
+async def test_create_service_with_scope(
+    app, create_user_with_scopes, service_name, service_data
+):
+    db = app.db
+    managed_service_data = deepcopy(service_data)
+    managed_service_data['oauth_client_allowed_scopes'] = ["admin:users"]
+    managed_service_data['oauth_client_id'] = "service-client-with-scope"
+    user_with_scope = create_user_with_scopes('admin:services', 'admin:users')
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, user_with_scope.name),
+        data=json.dumps(managed_service_data),
+        method='post',
+    )
+
+    assert r.status_code == 201
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is not None
+
+
+@mark.services
+async def test_create_service_without_requested_scope(
+    app,
+    service_admin_user,
+    service_data,
+    service_name,
+):
+    db = app.db
+    managed_service_data = deepcopy(service_data)
+    managed_service_data['oauth_client_allowed_scopes'] = ["admin:users"]
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(managed_service_data),
+        method='post',
+    )
+
+    assert r.status_code == 400
+    assert 'Not assigning requested scopes' in r.json()['message']
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is None
+
+
+@mark.services
+async def test_delete_service(app, service_admin_user, service_name, service_data):
+    db = app.db
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        data=json.dumps(service_data),
+        method='post',
+    )
+    assert r.status_code == 201
+
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        method='delete',
+    )
+    assert r.status_code == 200
+
+    orm_service = orm.Service.find(db, service_name)
+    assert orm_service is None
+
+    oath_client = (
+        db.query(orm.OAuthClient)
+        .filter_by(identifier=service_data['oauth_client_id'])
+        .first()
+    )
+    assert oath_client is None
+
+    assert service_name not in app._service_map
+
+    r = await api_request(app, f"services/{service_name}", method="delete")
+    assert r.status_code == 404
+
+
+@mark.services
+async def test_delete_service_from_config(app, service_admin_user, mockservice):
+    db = app.db
+    service_name = mockservice.name
+    r = await api_request(
+        app,
+        f'services/{service_name}',
+        headers=auth_header(db, service_admin_user.name),
+        method='delete',
+    )
+    assert r.status_code == 405
+    assert r.json()['message'] == f'Service {service_name} is not modifiable at runtime'
+
 
 async def test_root_api(app):
-    base_url = app.hub.url
-    url = ujoin(base_url, 'api')
     kwargs = {}
     if app.internal_ssl:
         kwargs['cert'] = (app.internal_ssl_cert, app.internal_ssl_key)
@@ -2171,7 +2795,7 @@ async def test_update_server_activity(app, user, server_name, fresh):
     # we use naive utc internally
     # initialize last_activity for one named and the default server
     for name in ("", "exists"):
-        user.spawners[name].orm_spawner.last_activity = now.replace(tzinfo=None)
+        user.spawners[name].orm_spawner.last_activity = internal_now
     app.db.commit()
 
     td = timedelta(minutes=1)

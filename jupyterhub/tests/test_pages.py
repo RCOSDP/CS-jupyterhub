@@ -1,4 +1,5 @@
 """Tests for HTML pages"""
+
 import asyncio
 import sys
 from unittest import mock
@@ -6,7 +7,6 @@ from urllib.parse import parse_qs, urlencode, urlparse
 
 import pytest
 from bs4 import BeautifulSoup
-from tornado.escape import url_escape
 from tornado.httputil import url_concat
 
 from .. import orm, roles, scopes
@@ -120,7 +120,7 @@ async def test_admin_version(app):
 @pytest.mark.parametrize('sort', ['running', 'last_activity', 'admin', 'name'])
 async def test_admin_sort(app, sort):
     cookies = await app.login_user('admin')
-    r = await get_page('admin?sort=%s' % sort, app, cookies=cookies)
+    r = await get_page(f'admin?sort={sort}', app, cookies=cookies)
     r.raise_for_status()
     assert r.status_code == 200
 
@@ -170,7 +170,7 @@ async def test_spawn_redirect(app, last_failed):
     r.raise_for_status()
     print(urlparse(r.url))
     path = urlparse(r.url).path
-    assert path == ujoin(app.base_url, '/user/%s/' % name)
+    assert path == ujoin(app.base_url, f'/user/{name}/')
 
     # stop server to ensure /user/name is handled by the Hub
     r = await api_request(
@@ -181,7 +181,7 @@ async def test_spawn_redirect(app, last_failed):
     # test handing of trailing slash on `/user/name`
     r = await get_page('user/' + name, app, hub=False, cookies=cookies)
     path = urlparse(r.url).path
-    assert path == ujoin(app.base_url, 'hub/user/%s/' % name)
+    assert path == ujoin(app.base_url, f'hub/user/{name}/')
     assert r.status_code == 424
 
 
@@ -213,7 +213,9 @@ async def test_spawn_handler_access(app):
     r.raise_for_status()
 
 
-@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+@pytest.mark.parametrize(
+    "has_access", ["all", "user", (pytest.param("group", id="in-group")), False]
+)
 async def test_spawn_other_user(
     app, user, username, group, create_temp_role, has_access
 ):
@@ -221,15 +223,17 @@ async def test_spawn_other_user(
     cookies = await app.login_user(username)
     requester = app.users[username]
     name = user.name
+    assert username != user.name
 
     if has_access:
         if has_access == "group":
-            group.users.append(user)
+            group.users.append(user.orm_user)
             app.db.commit()
             scopes = [
                 f"access:servers!group={group.name}",
                 f"servers!group={group.name}",
             ]
+            assert group in user.orm_user.groups
         elif has_access == "all":
             scopes = ["access:servers", "servers"]
         elif has_access == "user":
@@ -298,7 +302,9 @@ async def test_spawn_page_falsy_callable(app):
     assert history[1] == ujoin(public_url(app), "hub/spawn-pending/erik")
 
 
-@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+@pytest.mark.parametrize(
+    "has_access", ["all", "user", (pytest.param("group", id="in-group")), False]
+)
 async def test_spawn_page_access(
     app, has_access, group, username, user, create_temp_role
 ):
@@ -306,7 +312,7 @@ async def test_spawn_page_access(
     requester = app.users[username]
     if has_access:
         if has_access == "group":
-            group.users.append(user)
+            group.users.append(user.orm_user)
             app.db.commit()
             scopes = [
                 f"access:servers!group={group.name}",
@@ -380,8 +386,15 @@ async def test_spawn_form(app):
         u = app.users[orm_u]
         await u.stop()
         next_url = ujoin(app.base_url, 'user/jones/tree')
+        r = await async_requests.get(
+            url_concat(ujoin(base_url, 'spawn'), {'next': next_url}), cookies=cookies
+        )
+        r.raise_for_status()
+        spawn_page = BeautifulSoup(r.text, 'html.parser')
+        form = spawn_page.find("form")
+        action_url = public_host(app) + form["action"]
         r = await async_requests.post(
-            url_concat(ujoin(base_url, 'spawn'), {'next': next_url}),
+            action_url,
             cookies=cookies,
             data={'bounds': ['-1', '1'], 'energy': '511keV'},
         )
@@ -394,7 +407,9 @@ async def test_spawn_form(app):
         }
 
 
-@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+@pytest.mark.parametrize(
+    "has_access", ["all", "user", (pytest.param("group", id="in-group")), False]
+)
 async def test_spawn_form_other_user(
     app, username, user, group, create_temp_role, has_access
 ):
@@ -402,7 +417,7 @@ async def test_spawn_form_other_user(
     requester = app.users[username]
     if has_access:
         if has_access == "group":
-            group.users.append(user)
+            group.users.append(user.orm_user)
             app.db.commit()
             scopes = [
                 f"access:servers!group={group.name}",
@@ -419,8 +434,22 @@ async def test_spawn_form_other_user(
         base_url = ujoin(public_host(app), app.hub.base_url)
         next_url = ujoin(app.base_url, 'user', user.name, 'tree')
 
+        url = ujoin(base_url, 'spawn', user.name)
+        r = await async_requests.get(
+            url_concat(url, {'next': next_url}),
+            cookies=cookies,
+        )
+        if has_access:
+            r.raise_for_status()
+            spawn_page = BeautifulSoup(r.text, 'html.parser')
+            form = spawn_page.find("form")
+            action_url = ujoin(public_host(app), form["action"])
+        else:
+            assert r.status_code == 404
+            action_url = url_concat(url, {"_xsrf": cookies['_xsrf']})
+
         r = await async_requests.post(
-            url_concat(ujoin(base_url, 'spawn', user.name), {'next': next_url}),
+            action_url,
             cookies=cookies,
             data={'bounds': ['-3', '3'], 'energy': '938MeV'},
         )
@@ -450,9 +479,19 @@ async def test_spawn_form_with_file(app):
         orm_u = orm.User.find(app.db, 'jones')
         u = app.users[orm_u]
         await u.stop()
+        url = ujoin(base_url, 'spawn')
+
+        r = await async_requests.get(
+            url,
+            cookies=cookies,
+        )
+        r.raise_for_status()
+        spawn_page = BeautifulSoup(r.text, 'html.parser')
+        form = spawn_page.find("form")
+        action_url = public_host(app) + form["action"]
 
         r = await async_requests.post(
-            ujoin(base_url, 'spawn'),
+            action_url,
             cookies=cookies,
             data={'bounds': ['-1', '1'], 'energy': '511keV'},
             files={'hello': ('hello.txt', b'hello world\n')},
@@ -547,7 +586,7 @@ async def test_user_redirect(app, username):
         await asyncio.sleep(0.1)
         r = await async_requests.get(r.url, cookies=cookies)
         path = urlparse(r.url).path
-    assert path == ujoin(app.base_url, '/user/%s/notebooks/test.ipynb' % name)
+    assert path == ujoin(app.base_url, f'/user/{name}/notebooks/test.ipynb')
 
 
 async def test_user_redirect_hook(app, username):
@@ -591,7 +630,9 @@ async def test_user_redirect_hook(app, username):
     assert redirected_url.path == ujoin(app.base_url, 'user', username, 'terminals/1')
 
 
-@pytest.mark.parametrize("has_access", ["all", "user", "group", False])
+@pytest.mark.parametrize(
+    "has_access", ["all", "user", (pytest.param("group", id="in-group")), False]
+)
 async def test_other_user_url(app, username, user, group, create_temp_role, has_access):
     """Test accessing /user/someonelse/ URLs when the server is not running
 
@@ -605,7 +646,7 @@ async def test_other_user_url(app, username, user, group, create_temp_role, has_
     other_user_url = f"/user/{other_user.name}"
     if has_access:
         if has_access == "group":
-            group.users.append(other_user)
+            group.users.append(other_user.orm_user)
             app.db.commit()
             scopes = [f"access:servers!group={group.name}"]
         elif has_access == "all":
@@ -643,58 +684,6 @@ async def test_other_user_url(app, username, user, group, create_temp_role, has_
 
 
 @pytest.mark.parametrize(
-    'url, params, redirected_url, form_action',
-    [
-        (
-            # spawn?param=value
-            # will encode given parameters for an unauthenticated URL in the next url
-            # the next parameter will contain the app base URL (replaces BASE_URL in tests)
-            'spawn',
-            [('param', 'value')],
-            '/hub/login?next={{BASE_URL}}hub%2Fspawn%3Fparam%3Dvalue',
-            '/hub/login?next={{BASE_URL}}hub%2Fspawn%3Fparam%3Dvalue',
-        ),
-        (
-            # login?param=fromlogin&next=encoded(/hub/spawn?param=value)
-            # will drop parameters given to the login page, passing only the next url
-            'login',
-            [('param', 'fromlogin'), ('next', '/hub/spawn?param=value')],
-            '/hub/login?param=fromlogin&next=%2Fhub%2Fspawn%3Fparam%3Dvalue',
-            '/hub/login?next=%2Fhub%2Fspawn%3Fparam%3Dvalue',
-        ),
-        (
-            # login?param=value&anotherparam=anothervalue
-            # will drop parameters given to the login page, and use an empty next url
-            'login',
-            [('param', 'value'), ('anotherparam', 'anothervalue')],
-            '/hub/login?param=value&anotherparam=anothervalue',
-            '/hub/login?next=',
-        ),
-        (
-            # login
-            # simplest case, accessing the login URL, gives an empty next url
-            'login',
-            [],
-            '/hub/login',
-            '/hub/login?next=',
-        ),
-    ],
-)
-async def test_login_page(app, url, params, redirected_url, form_action):
-    url = url_concat(url, params)
-    r = await get_page(url, app)
-    redirected_url = redirected_url.replace('{{BASE_URL}}', url_escape(app.base_url))
-    assert r.url.endswith(redirected_url)
-    # now the login.html rendered template must include the given parameters in the form
-    # action URL, including the next URL
-    page = BeautifulSoup(r.text, "html.parser")
-    form = page.find("form", method="post")
-    action = form.attrs['action']
-    form_action = form_action.replace('{{BASE_URL}}', url_escape(app.base_url))
-    assert action.endswith(form_action)
-
-
-@pytest.mark.parametrize(
     "url, token_in",
     [
         ("/home", "url"),
@@ -704,11 +693,10 @@ async def test_login_page(app, url, params, redirected_url, form_action):
     ],
 )
 async def test_page_with_token(app, user, url, token_in):
-    cookies = await app.login_user(user.name)
     token = user.new_api_token()
     if token_in == "url":
         url = url_concat(url, {"token": token})
-        headers = None
+        headers = {}
     elif token_in == "header":
         headers = {
             "Authorization": f"token {token}",
@@ -722,11 +710,13 @@ async def test_page_with_token(app, user, url, token_in):
         allow_redirects=False,
     )
     if "/hub/login" in r.url:
+        cookies = {'_xsrf'}
         assert r.status_code == 200
     else:
+        cookies = set()
         assert r.status_code == 302
         assert r.headers["location"].partition("?")[0].endswith("/hub/login")
-    assert not r.cookies
+    assert {c.name for c in r.cookies} == cookies
 
 
 async def test_login_fail(app):
@@ -737,7 +727,7 @@ async def test_login_fail(app):
         data={'username': name, 'password': 'wrong'},
         allow_redirects=False,
     )
-    assert not r.cookies
+    assert set(r.cookies.keys()).issubset({"_xsrf"})
 
 
 @pytest.mark.parametrize(
@@ -751,15 +741,22 @@ async def test_login_strip(app, form_user, auth_user, form_password):
     """Test that login form strips space form usernames, but not passwords"""
     form_data = {"username": form_user, "password": form_password}
     expected_auth = {"username": auth_user, "password": form_password}
-    base_url = public_url(app)
     called_with = []
 
     async def mock_authenticate(handler, data):
         called_with.append(data)
 
     with mock.patch.object(app.authenticator, 'authenticate', mock_authenticate):
+        r = await get_page('login', app)
+        r.raise_for_status()
+        cookies = r.cookies
+        xsrf = cookies['_xsrf']
+        page = BeautifulSoup(r.text, "html.parser")
+        action_url = public_host(app) + page.find("form")["action"]
+        xsrf_input = page.find("form").find("input", attrs={"name": "_xsrf"})
+        form_data["_xsrf"] = xsrf_input["value"]
         await async_requests.post(
-            base_url + 'hub/login', data=form_data, allow_redirects=False
+            action_url, data=form_data, allow_redirects=False, cookies=cookies
         )
 
     assert called_with == [expected_auth]
@@ -773,7 +770,7 @@ async def test_login_strip(app, form_user, auth_user, form_password):
         (False, '', '', None),
         # next_url is respected
         (False, '/hub/admin', '/hub/admin', None),
-        (False, '/user/other', '/hub/user/other', None),
+        (False, '/user/other', '/user/other', None),
         (False, '/absolute', '/absolute', None),
         (False, '/has?query#andhash', '/has?query#andhash', None),
         # :// in query string or fragment
@@ -931,17 +928,19 @@ async def test_auto_login(app, request):
 async def test_auto_login_logout(app):
     name = 'burnham'
     cookies = await app.login_user(name)
+    s = AsyncSession()
+    s.cookies = cookies
 
     with mock.patch.dict(
         app.tornado_settings, {'authenticator': Authenticator(auto_login=True)}
     ):
-        r = await async_requests.get(
+        r = await s.get(
             public_host(app) + app.tornado_settings['logout_url'], cookies=cookies
         )
     r.raise_for_status()
     logout_url = public_host(app) + app.tornado_settings['logout_url']
     assert r.url == logout_url
-    assert r.cookies == {}
+    assert list(s.cookies.keys()) == ["_xsrf"]
     # don't include logged-out user in page:
     try:
         idx = r.text.index(name)
@@ -955,19 +954,23 @@ async def test_auto_login_logout(app):
 async def test_logout(app):
     name = 'wash'
     cookies = await app.login_user(name)
-    r = await async_requests.get(
-        public_host(app) + app.tornado_settings['logout_url'], cookies=cookies
+    s = AsyncSession()
+    s.cookies = cookies
+    r = await s.get(
+        public_host(app) + app.tornado_settings['logout_url'],
     )
     r.raise_for_status()
     login_url = public_host(app) + app.tornado_settings['login_url']
     assert r.url == login_url
-    assert r.cookies == {}
+    assert list(s.cookies.keys()) == ["_xsrf"]
 
 
 @pytest.mark.parametrize('shutdown_on_logout', [True, False])
 async def test_shutdown_on_logout(app, shutdown_on_logout):
     name = 'shutitdown'
     cookies = await app.login_user(name)
+    s = AsyncSession()
+    s.cookies = cookies
     user = app.users[name]
 
     # start the user's server
@@ -987,14 +990,14 @@ async def test_shutdown_on_logout(app, shutdown_on_logout):
     with mock.patch.dict(
         app.tornado_settings, {'shutdown_on_logout': shutdown_on_logout}
     ):
-        r = await async_requests.get(
+        r = await s.get(
             public_host(app) + app.tornado_settings['logout_url'], cookies=cookies
         )
         r.raise_for_status()
 
     login_url = public_host(app) + app.tornado_settings['login_url']
     assert r.url == login_url
-    assert r.cookies == {}
+    assert list(s.cookies.keys()) == ["_xsrf"]
 
     # wait for any pending state to resolve
     for i in range(50):
@@ -1237,7 +1240,7 @@ async def test_token_page(app):
     r.raise_for_status()
     body = extract_body(r)
     assert "API Tokens" in body, body
-    assert "Server at %s" % user.base_url in body, body
+    assert f"Server at {user.base_url}" in body, body
     assert "Authorized Applications" in body, body
 
 
@@ -1296,5 +1299,39 @@ async def test_pre_spawn_start_exc_options_form(app):
         r.raise_for_status()
         assert FormSpawner.options_form in r.text
         # spawning the user server should throw the pre_spawn_start error
-        with pytest.raises(Exception, match="%s" % exc):
+        with pytest.raises(Exception, match=str(exc)):
             await user.spawn()
+
+
+@pytest.mark.parametrize(
+    "scope, display, present",
+    [
+        ("access:services", True, True),
+        ("access:services!service=SERVICE", True, True),
+        ("access:services!service=SERVICE", False, False),
+        ("access:services!service=other", True, False),
+        ("", True, False),
+    ],
+)
+async def test_services_nav_links(
+    app, mockservice_url, create_user_with_scopes, scope, display, present
+):
+    service = mockservice_url
+    service.display = display
+    scopes = []
+    if scope:
+        scope = scope.replace("SERVICE", service.name)
+        scopes.append(scope)
+    user = create_user_with_scopes(*scopes)
+
+    cookies = await app.login_user(user.name)
+    r = await get_page("home", app, cookies=cookies)
+    assert r.status_code == 200
+    page = BeautifulSoup(r.text)
+    nav = page.find("ul", class_="navbar-nav")
+    # find service links
+    nav_urls = [a["href"] for a in nav.find_all("a")]
+    if present:
+        assert service.href in nav_urls
+    else:
+        assert service.href not in nav_urls

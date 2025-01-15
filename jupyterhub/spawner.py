@@ -1,12 +1,13 @@
 """
 Contains base Spawner class & default implementation
 """
+
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import ast
 import json
 import os
-import pipes
+import shlex
 import shutil
 import signal
 import sys
@@ -17,7 +18,11 @@ from tempfile import mkdtemp
 from textwrap import dedent
 from urllib.parse import urlparse
 
-from async_generator import aclosing
+if sys.version_info >= (3, 10):
+    from contextlib import aclosing
+else:
+    from async_generator import aclosing
+
 from sqlalchemy import inspect
 from tornado.ioloop import PeriodicCallback
 from traitlets import (
@@ -45,6 +50,7 @@ from .utils import (
     exponential_backoff,
     maybe_future,
     random_port,
+    recursive_update,
     url_escape_path,
     url_path_join,
 )
@@ -162,6 +168,9 @@ class Spawner(LoggingConfigurable):
     hub = Any()
     orm_spawner = Any()
     cookie_options = Dict()
+    cookie_host_prefix_enabled = Bool()
+    public_url = Unicode(help="Public URL of this spawner's server")
+    public_hub_url = Unicode(help="Public URL of the Hub itself")
 
     db = Any()
 
@@ -274,8 +283,6 @@ class Spawner(LoggingConfigurable):
     api_token = Unicode()
     oauth_client_id = Unicode()
 
-    oauth_scopes = List(Unicode())
-
     @property
     def oauth_scopes(self):
         warnings.warn(
@@ -299,6 +306,57 @@ class Spawner(LoggingConfigurable):
             f"access:servers!server={self.user.name}/{self.name}",
             f"access:servers!user={self.user.name}",
         ]
+
+    group_overrides = Union(
+        [Callable(), Dict()],
+        help="""
+        Override specific traitlets based on group membership of the user.
+
+        This can be a dict, or a callable that returns a dict. The keys of the dict
+        are *only* used for lexicographical sorting, to guarantee consistent
+        ordering of the overrides. If it is a callable, it may be async, and will
+        be passed one parameter - the spawner instance. It should return a dictionary.
+
+        The values of the dict are dicts with the following keys:
+
+        - `"groups"` - If the user belongs to *any* of these groups, these overrides are
+          applied to their server before spawning.
+        - `"spawner_override"` - a dictionary with overrides to apply to the Spawner
+          settings. Each value can be either the final value to change or a callable that
+          take the `Spawner` instance as parameter and returns the final value.
+          If the traitlet being overriden is a *dictionary*, the dictionary
+          will be *recursively updated*, rather than overriden. If you want to
+          remove a key, set its value to `None`.
+          
+        Example:
+
+            The following example config will:
+    
+            1. Add the environment variable "AM_I_GROUP_ALPHA" to everyone in the "group-alpha" group
+            2. Add the environment variable "AM_I_GROUP_BETA" to everyone in the "group-beta" group.
+               If a user is part of both "group-beta" and "group-alpha", they will get *both* these env
+               vars, due to the dictionary merging functionality.
+            3. Add a higher memory limit for everyone in the "group-beta" group.
+            
+            ::
+            
+                c.Spawner.group_overrides = {
+                    "01-group-alpha-env-add": {
+                        "groups": ["group-alpha"],
+                        "spawner_override": {"environment": {"AM_I_GROUP_ALPHA": "yes"}},
+                    },
+                    "02-group-beta-env-add": {
+                        "groups": ["group-beta"],
+                        "spawner_override": {"environment": {"AM_I_GROUP_BETA": "yes"}},
+                    },
+                    "03-group-beta-mem-limit": {
+                        "groups": ["group-beta"],
+                        "spawner_override": {"mem_limit": "2G"}
+                    }
+                }
+        """,
+        config=True,
+    )
 
     handler = Any()
 
@@ -381,6 +439,23 @@ class Spawner(LoggingConfigurable):
         # always add access scope
         scopes.append(f"access:servers!server={self.user.name}/{self.name}")
         return sorted(set(scopes))
+
+    server_token_scopes = Union(
+        [List(Unicode()), Callable()],
+        help="""The list of scopes to request for $JUPYTERHUB_API_TOKEN
+
+        If not specified, the scopes in the `server` role will be used
+        (unchanged from pre-4.0).
+
+        If callable, will be called with the Spawner instance as its sole argument
+        (JupyterHub user available as spawner.user).
+
+        JUPYTERHUB_API_TOKEN will be assigned the _subset_ of these scopes
+        that are held by the user (as in oauth_client_allowed_scopes).
+
+        .. versionadded:: 4.0
+        """,
+    ).tag(config=True)
 
     will_resume = Bool(
         False,
@@ -472,6 +547,20 @@ class Spawner(LoggingConfigurable):
         At every poll interval, each spawner's `.poll` method is called, which checks
         if the single-user server is still running. If it isn't running, then JupyterHub modifies
         its own state accordingly and removes appropriate routes from the configurable proxy.
+        """,
+    ).tag(config=True)
+
+    poll_jitter = Float(
+        0.1,
+        min=0,
+        max=1,
+        help="""
+        Jitter fraction for poll_interval.
+
+        Avoids alignment of poll calls for many Spawners,
+        e.g. when restarting JupyterHub, which restarts all polls for running Spawners.
+
+        `poll_jitter=0` means no jitter, 0.1 means 10%, etc.
         """,
     ).tag(config=True)
 
@@ -612,16 +701,7 @@ class Spawner(LoggingConfigurable):
     )
 
     env_keep = List(
-        [
-            'PATH',
-            'PYTHONPATH',
-            'CONDA_ROOT',
-            'CONDA_DEFAULT_ENV',
-            'VIRTUAL_ENV',
-            'LANG',
-            'LC_ALL',
-            'JUPYTERHUB_SINGLEUSER_APP',
-        ],
+        ['JUPYTERHUB_SINGLEUSER_APP'],
         help="""
         List of environment variables for the single-user server to inherit from the JupyterHub process.
 
@@ -823,6 +903,27 @@ class Spawner(LoggingConfigurable):
         """,
     ).tag(config=True)
 
+    progress_ready_hook = Any(
+        help="""
+        An optional hook function that you can implement to modify the
+        ready event, which will be shown to the user on the spawn progress page when their server
+        is ready.
+
+        This can be set independent of any concrete spawner implementation.
+
+        This maybe a coroutine.
+
+        Example::
+
+            async def my_ready_hook(spawner, ready_event):
+                ready_event["html_message"] = f"Server {spawner.name} is ready for {spawner.user.name}"
+                return ready_event
+
+            c.Spawner.progress_ready_hook = my_ready_hook
+
+        """
+    ).tag(config=True)
+
     pre_spawn_hook = Any(
         help="""
         An optional hook function that you can implement to do some
@@ -835,10 +936,9 @@ class Spawner(LoggingConfigurable):
 
         Example::
 
-            from subprocess import check_call
             def my_hook(spawner):
                 username = spawner.user.name
-                check_call(['./examples/bootstrap-script/bootstrap.sh', username])
+                spawner.environment["GREETING"] = f"Hello {username}"
 
             c.Spawner.pre_spawn_hook = my_hook
 
@@ -937,7 +1037,7 @@ class Spawner(LoggingConfigurable):
         env = {}
         if self.env:
             warnings.warn(
-                "Spawner.env is deprecated, found %s" % self.env, DeprecationWarning
+                f"Spawner.env is deprecated, found {self.env}", DeprecationWarning
             )
             env.update(self.env)
 
@@ -954,6 +1054,10 @@ class Spawner(LoggingConfigurable):
         env['JUPYTERHUB_CLIENT_ID'] = self.oauth_client_id
         if self.cookie_options:
             env['JUPYTERHUB_COOKIE_OPTIONS'] = json.dumps(self.cookie_options)
+
+        env["JUPYTERHUB_COOKIE_HOST_PREFIX_ENABLED"] = str(
+            int(self.cookie_host_prefix_enabled)
+        )
         env['JUPYTERHUB_HOST'] = self.hub.public_host
         env['JUPYTERHUB_OAUTH_CALLBACK_URL'] = url_path_join(
             self.user.url, url_escape_path(self.name), 'oauth_callback'
@@ -997,6 +1101,10 @@ class Spawner(LoggingConfigurable):
         proto = 'https' if self.internal_ssl else 'http'
         bind_url = f"{proto}://{self.ip}:{self.port}{base_url}"
         env["JUPYTERHUB_SERVICE_URL"] = bind_url
+
+        # the public URLs of this server and the Hub
+        env["JUPYTERHUB_PUBLIC_URL"] = self.public_url
+        env["JUPYTERHUB_PUBLIC_HUB_URL"] = self.public_hub_url
 
         # Put in limit and guarantee info if they exist.
         # Note that this is for use by the humans / notebook extensions in the
@@ -1118,7 +1226,7 @@ class Spawner(LoggingConfigurable):
     ssl_alt_names_include_local = Bool(
         True,
         config=True,
-        help="""Whether to include DNS:localhost, IP:127.0.0.1 in alt names""",
+        help="""Whether to include `DNS:localhost`, `IP:127.0.0.1` in alt names""",
     )
 
     async def create_certs(self):
@@ -1369,7 +1477,9 @@ class Spawner(LoggingConfigurable):
         self.stop_polling()
 
         self._poll_callback = PeriodicCallback(
-            self.poll_and_notify, 1e3 * self.poll_interval
+            self.poll_and_notify,
+            1e3 * self.poll_interval,
+            jitter=self.poll_jitter,
         )
         self._poll_callback.start()
 
@@ -1412,6 +1522,48 @@ class Spawner(LoggingConfigurable):
         except AnyTimeoutError:
             return False
 
+    def _apply_overrides(self, spawner_override: dict):
+        """
+        Apply set of overrides onto the current spawner instance
+
+        spawner_override is a dict with key being the name of the traitlet
+        to override, and value is either a callable or the value for the
+        traitlet. If the value is a dictionary, it is *merged* with the
+        existing value (rather than replaced). Callables are called with
+        one parameter - the current spawner instance.
+        """
+        for k, v in spawner_override.items():
+            if callable(v):
+                v = v(self)
+
+            # If v is a dict, *merge* it with existing values, rather than completely
+            # resetting it. This allows *adding* things like environment variables rather
+            # than completely replacing them. If value is set to None, the key
+            # will be removed
+            if isinstance(v, dict) and isinstance(getattr(self, k), dict):
+                recursive_update(getattr(self, k), v)
+            else:
+                setattr(self, k, v)
+
+    async def apply_group_overrides(self):
+        """
+        Apply group overrides before starting a server
+        """
+        user_group_names = {g.name for g in self.user.groups}
+        if callable(self.group_overrides):
+            group_overrides = await maybe_future(self.group_overrides(self))
+        else:
+            group_overrides = self.group_overrides
+        for key in sorted(group_overrides):
+            go = group_overrides[key]
+            if user_group_names & set(go['groups']):
+                # If there is *any* overlap between the groups user is in
+                # and the groups for this override, apply overrides
+                self.log.info(
+                    f"Applying group_override {key} for {self.user.name}, modifying config keys: {' '.join(go['spawner_override'].keys())}"
+                )
+                self._apply_overrides(go['spawner_override'])
+
 
 def _try_setcwd(path):
     """Try to set CWD to path, walking up until a valid directory is found.
@@ -1427,7 +1579,7 @@ def _try_setcwd(path):
             path, _ = os.path.split(path)
         else:
             return
-    print("Couldn't set CWD at all (%s), using temp dir" % exc, file=sys.stderr)
+    print(f"Couldn't set CWD at all ({exc}), using temp dir", file=sys.stderr)
     td = mkdtemp()
     os.chdir(td)
 
@@ -1438,14 +1590,13 @@ def set_user_setuid(username, chdir=True):
     Returned preexec_fn will set uid/gid, and attempt to chdir to the target user's
     home directory.
     """
-    import grp
     import pwd
 
     user = pwd.getpwnam(username)
     uid = user.pw_uid
     gid = user.pw_gid
     home = user.pw_dir
-    gids = [g.gr_gid for g in grp.getgrall() if username in g.gr_mem]
+    gids = os.getgrouplist(username, gid)
 
     def preexec():
         """Set uid/gid of current process
@@ -1458,7 +1609,7 @@ def set_user_setuid(username, chdir=True):
         try:
             os.setgroups(gids)
         except Exception as e:
-            print('Failed to set groups %s' % e, file=sys.stderr)
+            print(f'Failed to set groups {e}', file=sys.stderr)
         os.setuid(uid)
 
         # start in the user's home dir
@@ -1555,6 +1706,20 @@ class LocalProcessSpawner(Spawner):
         The process id (pid) of the single-user server process spawned for current user.
         """,
     )
+
+    @default("env_keep")
+    def _env_keep_default(self):
+        return [
+            "CONDA_DEFAULT_ENV",
+            "CONDA_ROOT",
+            "JUPYTERHUB_SINGLEUSER_APP",
+            "LANG",
+            "LC_ALL",
+            "LD_LIBRARY_PATH",
+            "PATH",
+            "PYTHONPATH",
+            "VIRTUAL_ENV",
+        ]
 
     def make_preexec_fn(self, name):
         """
@@ -1667,9 +1832,9 @@ class LocalProcessSpawner(Spawner):
         if self.shell_cmd:
             # using shell_cmd (e.g. bash -c),
             # add our cmd list as the last (single) argument:
-            cmd = self.shell_cmd + [' '.join(pipes.quote(s) for s in cmd)]
+            cmd = self.shell_cmd + [' '.join(shlex.quote(s) for s in cmd)]
 
-        self.log.info("Spawning %s", ' '.join(pipes.quote(s) for s in cmd))
+        self.log.info("Spawning %s", ' '.join(shlex.quote(s) for s in cmd))
 
         popen_kwargs = dict(
             preexec_fn=self.make_preexec_fn(self.user.name),
@@ -1718,7 +1883,7 @@ class LocalProcessSpawner(Spawner):
             self.clear_state()
             return 0
 
-        # We use pustil.pid_exists on windows
+        # We use psutil.pid_exists on windows
         if os.name == 'nt':
             alive = psutil.pid_exists(self.pid)
         else:

@@ -1,7 +1,9 @@
 """Tests for service authentication"""
+
 import copy
 import os
 import sys
+import time
 from binascii import hexlify
 from unittest import mock
 from urllib.parse import parse_qs, urlparse
@@ -84,24 +86,12 @@ async def test_hubauth_token(app, mockservice_url, create_user_with_scopes):
     sub_reply = {key: reply.get(key, 'missing') for key in ['name', 'admin']}
     assert sub_reply == {'name': u.name, 'admin': False}
 
-    # token in ?token parameter
+    # token in ?token parameter is not allowed by default
     r = await async_requests.get(
-        public_url(app, mockservice_url) + '/whoami/?token=%s' % token
-    )
-    r.raise_for_status()
-    reply = r.json()
-    sub_reply = {key: reply.get(key, 'missing') for key in ['name', 'admin']}
-    assert sub_reply == {'name': u.name, 'admin': False}
-
-    r = await async_requests.get(
-        public_url(app, mockservice_url) + '/whoami/?token=no-such-token',
+        public_url(app, mockservice_url) + f'/whoami/?token={token}',
         allow_redirects=False,
     )
-    assert r.status_code == 302
-    assert 'Location' in r.headers
-    location = r.headers['Location']
-    path = urlparse(location).path
-    assert path.endswith('/hub/login')
+    assert r.status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -160,7 +150,7 @@ async def test_hubauth_service_token(request, app, mockservice_url, scopes, allo
     # token in Authorization header
     r = await async_requests.get(
         public_url(app, mockservice_url) + 'whoami/',
-        headers={'Authorization': 'token %s' % token},
+        headers={'Authorization': f'token {token}'},
         allow_redirects=False,
     )
     service_model = {
@@ -178,28 +168,12 @@ async def test_hubauth_service_token(request, app, mockservice_url, scopes, allo
     else:
         assert r.status_code == 403
 
-    # token in ?token parameter
+    # token in ?token parameter is not allowed by default
     r = await async_requests.get(
-        public_url(app, mockservice_url) + 'whoami/?token=%s' % token
-    )
-    if allowed:
-        r.raise_for_status()
-        assert r.status_code == 200
-        reply = r.json()
-        assert service_model.items() <= reply.items()
-        assert not r.cookies
-    else:
-        assert r.status_code == 403
-
-    r = await async_requests.get(
-        public_url(app, mockservice_url) + 'whoami/?token=no-such-token',
+        public_url(app, mockservice_url) + f'whoami/?token={token}',
         allow_redirects=False,
     )
-    assert r.status_code == 302
-    assert 'Location' in r.headers
-    location = r.headers['Location']
-    path = urlparse(location).path
-    assert path.endswith('/hub/login')
+    assert r.status_code == 403
 
 
 @pytest.mark.parametrize(
@@ -329,7 +303,7 @@ async def test_oauth_service_roles(
     # we should be looking at the oauth confirmation page
     assert urlparse(r.url).path == app.base_url + 'hub/api/oauth2/authorize'
     # verify oauth state cookie was set at some point
-    assert set(r.history[0].cookies.keys()) == {'service-%s-oauth-state' % service.name}
+    assert set(r.history[0].cookies.keys()) == {f'service-{service.name}-oauth-state'}
 
     page = BeautifulSoup(r.text, "html.parser")
     scope_inputs = page.find_all("input", {"name": "scopes"})
@@ -339,13 +313,14 @@ async def test_oauth_service_roles(
     data = {}
     if scope_values:
         data["scopes"] = scope_values
-    r = await s.post(r.url, data=data, headers={'Referer': r.url})
+    data["_xsrf"] = s.cookies["_xsrf"]
+    r = await s.post(r.url, data=data)
     r.raise_for_status()
     assert r.url == url
     # verify oauth cookie is set
-    assert 'service-%s' % service.name in set(s.cookies.keys())
+    assert f'service-{service.name}' in set(s.cookies.keys())
     # verify oauth state cookie has been consumed
-    assert 'service-%s-oauth-state' % service.name not in set(s.cookies.keys())
+    assert f'service-{service.name}-oauth-state' not in set(s.cookies.keys())
 
     # second request should be authenticated, which means no redirects
     r = await s.get(url, allow_redirects=False)
@@ -382,20 +357,14 @@ async def test_oauth_service_roles(
 
     # token-authenticated request to HubOAuth
     token = app.users[name].new_api_token()
-    # token in ?token parameter
-    r = await async_requests.get(url_concat(url, {'token': token}))
+    s.headers["Authorization"] = f"Bearer {token}"
+    r = await async_requests.get(url, headers=s.headers)
     r.raise_for_status()
     reply = r.json()
     assert reply['name'] == name
 
-    # verify that ?token= requests set a cookie
-    assert len(r.cookies) != 0
-    # ensure cookie works in future requests
-    r = await async_requests.get(url, cookies=r.cookies, allow_redirects=False)
-    r.raise_for_status()
-    assert r.url == url
-    reply = r.json()
-    assert reply['name'] == name
+    # tokens in headers don't set cookies
+    assert len(r.cookies) == 0
 
 
 @pytest.mark.parametrize(
@@ -433,16 +402,16 @@ async def test_oauth_access_scopes(
     # we should be looking at the oauth confirmation page
     assert urlparse(r.url).path == app.base_url + 'hub/api/oauth2/authorize'
     # verify oauth state cookie was set at some point
-    assert set(r.history[0].cookies.keys()) == {'service-%s-oauth-state' % service.name}
+    assert set(r.history[0].cookies.keys()) == {f'service-{service.name}-oauth-state'}
 
     # submit the oauth form to complete authorization
-    r = await s.post(r.url, headers={'Referer': r.url})
+    r = await s.post(r.url, data={"_xsrf": s.cookies["_xsrf"]})
     r.raise_for_status()
     assert r.url == url
     # verify oauth cookie is set
-    assert 'service-%s' % service.name in set(s.cookies.keys())
+    assert f'service-{service.name}' in set(s.cookies.keys())
     # verify oauth state cookie has been consumed
-    assert 'service-%s-oauth-state' % service.name not in set(s.cookies.keys())
+    assert f'service-{service.name}-oauth-state' not in set(s.cookies.keys())
 
     # second request should be authenticated, which means no redirects
     r = await s.get(url, allow_redirects=False)
@@ -518,27 +487,42 @@ async def test_oauth_page_hit(
         assert r.url == url
 
 
-async def test_oauth_cookie_collision(app, mockservice_url, create_user_with_scopes):
+@pytest.mark.parametrize("finish_first", [1, 2])
+async def test_oauth_cookie_collision(
+    app, mockservice_url, create_user_with_scopes, finish_first
+):
     service = mockservice_url
-    url = url_path_join(public_url(app, mockservice_url), 'owhoami/')
+    service_url = public_url(app, mockservice_url)
+    url = url_path_join(service_url, 'owhoami/')
     print(url)
     s = AsyncSession()
     name = 'mypha'
-    user = create_user_with_scopes("access:services", name=name)
+    create_user_with_scopes("access:services", name=name)
     s.cookies = await app.login_user(name)
-    state_cookie_name = 'service-%s-oauth-state' % service.name
-    service_cookie_name = 'service-%s' % service.name
-    oauth_1 = await s.get(url)
-    print(oauth_1.headers)
-    print(oauth_1.cookies, oauth_1.url, url)
+    state_cookie_name = f'service-{service.name}-oauth-state'
+    service_cookie_name = f'service-{service.name}'
+    url_1 = url + "?oauth_test=1"
+    oauth_1 = await s.get(url_1)
     assert state_cookie_name in s.cookies
     state_cookies = [c for c in s.cookies.keys() if c.startswith(state_cookie_name)]
     # only one state cookie
     assert state_cookies == [state_cookie_name]
+    # create dict of Cookie objects, so we can check properties
+    # cookies.__getitem__ returns only cookie _value_, but we want to check expiration
+    cookie_dict = {cookie.name: cookie for cookie in s.cookies}
+    state_cookie = cookie_dict[state_cookie_name]
+
+    # check state cookie properties
+    # should expire in 10 minutes (600 seconds)
+    assert time.time() < state_cookie.expires < time.time() + 630
+    # path is set right
+    assert state_cookie.path == service.prefix
+
     state_1 = s.cookies[state_cookie_name]
 
     # start second oauth login before finishing the first
-    oauth_2 = await s.get(url)
+    url_2 = url + "?oauth_test=2"
+    oauth_2 = await s.get(url_2)
     state_cookies = [c for c in s.cookies.keys() if c.startswith(state_cookie_name)]
     assert len(state_cookies) == 2
     # get the random-suffix cookie name
@@ -546,33 +530,45 @@ async def test_oauth_cookie_collision(app, mockservice_url, create_user_with_sco
     # we didn't clobber the default cookie
     assert s.cookies[state_cookie_name] == state_1
 
-    # finish oauth 2
+    # select which oauth process to finish
+    if finish_first == 1:
+        oauth = oauth_1
+        expected_url = url_1
+        second_oauth = oauth_2
+        second_url = url_2
+    elif finish_first == 2:
+        oauth = oauth_2
+        expected_url = url_2
+        second_oauth = oauth_1
+        second_url = url_1
+    else:
+        raise ValueError(f"finish_first should be 1 or 2, not {finish_first!r}")
     # submit the oauth form to complete authorization
-    r = await s.post(
-        oauth_2.url, data={'scopes': ['identify']}, headers={'Referer': oauth_2.url}
-    )
+    hub_xsrf = s.cookies.get("_xsrf", path=app.hub.base_url)
+    r = await s.post(oauth.url, data={'scopes': ['identify'], "_xsrf": hub_xsrf})
     r.raise_for_status()
-    assert r.url == url
-    # after finishing, state cookie is cleared
+    assert r.url == expected_url
+    # after finishing, state cookies are all cleared
+    assert state_cookie_name not in s.cookies
     assert state_cookie_2 not in s.cookies
+    # finishing one oauth clears all state cookies
+    state_cookies = [c for c in s.cookies.keys() if c.startswith(state_cookie_name)]
+    assert state_cookies == []
+
     # service login cookie is set
     assert service_cookie_name in s.cookies
-    service_cookie_2 = s.cookies[service_cookie_name]
+    service_cookie = s.cookies[service_cookie_name]
+    assert service_cookie
 
-    # finish oauth 1
-    r = await s.post(
-        oauth_1.url, data={'scopes': ['identify']}, headers={'Referer': oauth_1.url}
-    )
+    # finish other oauth
+    r = await s.post(second_oauth.url, data={'scopes': ['identify'], "_xsrf": hub_xsrf})
     r.raise_for_status()
-    assert r.url == url
 
-    # after finishing, state cookie is cleared (again)
-    assert state_cookie_name not in s.cookies
-    # service login cookie is set (again, to a different value)
-    assert service_cookie_name in s.cookies
-    assert s.cookies[service_cookie_name] != service_cookie_2
+    # second oauth doesn't complete,
+    # but is short-circuited because already logged in
+    assert r.url == second_url
 
-    # after completing both OAuth logins, no OAuth state cookies remain
+    # make sure we didn't leave any cookie lying around
     state_cookies = [s for s in s.cookies.keys() if s.startswith(state_cookie_name)]
     assert state_cookies == []
 
@@ -586,7 +582,7 @@ async def test_oauth_logout(app, mockservice_url, create_user_with_scopes):
     4. cache hit
     """
     service = mockservice_url
-    service_cookie_name = 'service-%s' % service.name
+    service_cookie_name = f'service-{service.name}'
     url = url_path_join(public_url(app, mockservice_url), 'owhoami/?foo=bar')
     # first request is only going to set login cookie
     s = AsyncSession()
@@ -606,7 +602,7 @@ async def test_oauth_logout(app, mockservice_url, create_user_with_scopes):
     r.raise_for_status()
     assert urlparse(r.url).path.endswith('oauth2/authorize')
     # submit the oauth form to complete authorization
-    r = await s.post(r.url, data={'scopes': ['identify']}, headers={'Referer': r.url})
+    r = await s.post(r.url, data={'scopes': ['identify'], "_xsrf": s.cookies["_xsrf"]})
     r.raise_for_status()
     assert r.url == url
 
@@ -631,7 +627,7 @@ async def test_oauth_logout(app, mockservice_url, create_user_with_scopes):
     r = await s.get(public_url(app, path='hub/logout'))
     r.raise_for_status()
     # verify that all cookies other than the service cookie are cleared
-    assert list(s.cookies.keys()) == [service_cookie_name]
+    assert sorted(set(s.cookies.keys())) == ["_xsrf", service_cookie_name]
     # verify that clearing session id invalidates service cookie
     # i.e. redirect back to login page
     r = await s.get(url)

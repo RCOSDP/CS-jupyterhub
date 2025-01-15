@@ -20,31 +20,32 @@ Other components
 - MockPAMAuthenticator
 - MockHub
 - MockSingleUserServer
-- StubSingleUserSpawner
+- InstrumentedSpawner
 
 - public_host
 - public_url
 
 """
+
 import asyncio
 import os
 import sys
-import threading
 from concurrent.futures import ThreadPoolExecutor
 from tempfile import NamedTemporaryFile
 from unittest import mock
 from urllib.parse import urlparse
 
 from pamela import PAMError
+from sqlalchemy import event
+from tornado.httputil import url_concat
 from traitlets import Bool, Dict, default
 
 from .. import metrics, orm, roles
 from ..app import JupyterHub
 from ..auth import PAMAuthenticator
-from ..singleuser import SingleUserNotebookApp
 from ..spawner import SimpleLocalProcessSpawner
-from ..utils import random_port, utcnow
-from .utils import async_requests, public_url, ssl_setup
+from ..utils import random_port, url_path_join, utcnow
+from .utils import AsyncSession, public_url, ssl_setup
 
 
 def mock_authenticate(username, password, service, encoding):
@@ -86,6 +87,11 @@ class MockSpawner(SimpleLocalProcessSpawner):
     use_this_api_token = None
 
     def start(self):
+        # preserve any JupyterHub env in mock spawner
+        for key in os.environ:
+            if 'JUPYTERHUB' in key and key not in self.env_keep:
+                self.env_keep.append(key)
+
         if self.use_this_api_token:
             self.api_token = self.use_this_api_token
         elif self.will_resume:
@@ -96,7 +102,7 @@ class MockSpawner(SimpleLocalProcessSpawner):
 class SlowSpawner(MockSpawner):
     """A spawner that takes a few seconds to start"""
 
-    delay = 2
+    delay = 5
     _start_future = None
 
     async def start(self):
@@ -237,6 +243,8 @@ class MockHub(JupyterHub):
             cert_location = kwargs['internal_certs_location']
             kwargs['external_certs'] = ssl_setup(cert_location, 'hub-ca')
         super().__init__(*args, **kwargs)
+        if 'allow_all' not in self.config.Authenticator:
+            self.config.Authenticator.allow_all = True
 
     @default('subdomain_host')
     def _subdomain_host_default(self):
@@ -304,6 +312,21 @@ class MockHub(JupyterHub):
                 self.db.delete(role)
             self.db.commit()
 
+        # count db requests
+        self.db_query_count = 0
+        engine = self.db.get_bind()
+
+        @event.listens_for(engine, "before_execute")
+        def before_execute(conn, clauseelement, multiparams, params, execution_options):
+            self.db_query_count += 1
+
+    def init_logging(self):
+        super().init_logging()
+        # enable log propagation for pytest capture
+        self.log.propagate = True
+        # clear unneeded handlers
+        self.log.handlers.clear()
+
     async def initialize(self, argv=None):
         self.pid_file = NamedTemporaryFile(delete=False).name
         self.db_file = NamedTemporaryFile()
@@ -351,41 +374,40 @@ class MockHub(JupyterHub):
     async def login_user(self, name):
         """Login a user by name, returning her cookies."""
         base_url = public_url(self)
-        external_ca = None
+        s = AsyncSession()
         if self.internal_ssl:
-            external_ca = self.external_certs['files']['ca']
-        r = await async_requests.post(
-            base_url + 'hub/login',
+            s.verify = self.external_certs['files']['ca']
+        login_url = base_url + 'hub/login'
+        r = await s.get(login_url)
+        r.raise_for_status()
+        xsrf = r.cookies['_xsrf']
+
+        r = await s.post(
+            url_concat(login_url, {"_xsrf": xsrf}),
             data={'username': name, 'password': name},
             allow_redirects=False,
-            verify=external_ca,
         )
         r.raise_for_status()
-        assert r.cookies
-        return r.cookies
+        # make second request to get updated xsrf cookie
+        r2 = await s.get(
+            url_path_join(base_url, "hub/home"),
+            allow_redirects=False,
+        )
+        assert r2.status_code == 200
+        assert sorted(s.cookies.keys()) == [
+            '_xsrf',
+            'jupyterhub-hub-login',
+            'jupyterhub-session-id',
+        ]
+        return s.cookies
 
 
-# single-user-server mocking:
-
-
-class MockSingleUserServer(SingleUserNotebookApp):
-    """Mock-out problematic parts of single-user server when run in a thread
-
-    Currently:
-
-    - disable signal handler
+class InstrumentedSpawner(MockSpawner):
     """
+    Spawner that starts a full singleuser server
 
-    def init_signal(self):
-        pass
-
-    @default("log_level")
-    def _default_log_level(self):
-        return 10
-
-
-class StubSingleUserSpawner(MockSpawner):
-    """Spawner that starts a MockSingleUserServer in a thread."""
+    instrumented with the JupyterHub test extension.
+    """
 
     @default("default_url")
     def _default_url(self):
@@ -399,41 +421,10 @@ class StubSingleUserSpawner(MockSpawner):
         """
         return "/tree"
 
-    _thread = None
+    @default('cmd')
+    def _cmd_default(self):
+        return [sys.executable, '-m', 'jupyterhub.singleuser']
 
-    async def start(self):
-        ip = self.ip = '127.0.0.1'
-        port = self.port = random_port()
-        env = self.get_env()
-        args = self.get_args()
-        evt = threading.Event()
-        print(args, env)
-
-        def _run():
-            with mock.patch.dict(os.environ, env):
-                app = self._app = MockSingleUserServer()
-                app.initialize(args)
-                app.io_loop.add_callback(lambda: evt.set())
-                assert app.hub_auth.oauth_client_id
-                assert app.hub_auth.api_token
-                assert app.hub_auth.oauth_scopes
-                app.start()
-
-        self._thread = threading.Thread(target=_run)
-        self._thread.start()
-        ready = evt.wait(timeout=3)
-        assert ready
-        return (ip, port)
-
-    async def stop(self):
-        self._app.stop()
-        self._thread.join(timeout=30)
-        assert not self._thread.is_alive()
-
-    async def poll(self):
-        if self._thread is None:
-            return 0
-        if self._thread.is_alive():
-            return None
-        else:
-            return 0
+    def start(self):
+        self.environment["JUPYTERHUB_SINGLEUSER_TEST_EXTENSION"] = "1"
+        return super().start()

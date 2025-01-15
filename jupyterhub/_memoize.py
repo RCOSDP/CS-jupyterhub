@@ -3,6 +3,7 @@
 Note: a memoized function should always return an _immutable_
 result to avoid later modifications polluting cached results.
 """
+
 from collections import OrderedDict
 from functools import wraps
 
@@ -83,6 +84,7 @@ def lru_cache_key(key_func, maxsize=1024):
 
     def cache_func(func):
         cache = LRUCache(maxsize=maxsize)
+
         # the actual decorated function:
         @wraps(func)
         def cached(*args, **kwargs):

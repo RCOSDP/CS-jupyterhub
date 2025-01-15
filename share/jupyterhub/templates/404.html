@@ -1,8 +1,7 @@
 {% extends "error.html" %}
-
 {% block error_detail %}
-<p>Jupyter has lots of moons, but this is not one...</p>
-{% endblock %}
+  <p>Jupyter has lots of moons, but this is not one...</p>
+{% endblock error_detail %}
 
 {% block script %}
 {{ super() }}
@@ -11,4 +10,4 @@
     showReturnOnError();
   });
 </script>
-{% endblock %}
+{% endblock script %}

@@ -2,6 +2,7 @@
 """
 whoami service authentication with the Hub
 """
+
 import json
 import os
 import secrets
@@ -37,7 +38,7 @@ def authenticated(f):
         else:
             # redirect to login url on failed auth
             state = auth.generate_state(next_url=request.path)
-            response = make_response(redirect(auth.login_url + '&state=%s' % state))
+            response = make_response(redirect(auth.login_url + f'&state={state}'))
             response.set_cookie(auth.state_cookie_name, state)
             return response
 
@@ -56,14 +57,14 @@ def whoami(user):
 def oauth_callback():
     code = request.args.get('code', None)
     if code is None:
-        return 403
+        return "Forbidden", 403
 
     # validate state field
     arg_state = request.args.get('state', None)
     cookie_state = request.cookies.get(auth.state_cookie_name)
     if arg_state is None or arg_state != cookie_state:
         # state doesn't match
-        return 403
+        return "Forbidden", 403
 
     token = auth.token_for_code(code)
     # store token in session cookie
