@@ -441,6 +441,7 @@ class APIHandler(BaseHandler):
         'groups': list,
         'roles': list,
         'auth_state': dict,
+        'mail_address': str,
     }
 
     _group_model_types = {'name': str, 'users': list, 'roles': list}
