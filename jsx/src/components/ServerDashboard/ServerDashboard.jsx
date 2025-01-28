@@ -155,6 +155,10 @@ const ServerDashboard = (props) => {
     const [title, setTitle] = useState("");
 
     useEffect(() => {
+      if (!getNotificationTemplates) {
+        console.warn("function getNotificationTemplates not defined");
+        return;
+      }
       getNotificationTemplates()
         .then((data) => {
           if (data.templates) {
