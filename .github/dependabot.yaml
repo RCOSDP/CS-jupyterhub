@@ -1,0 +1,57 @@
+# dependabot.yaml reference: https://docs.github.com/en/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+#
+# Notes:
+# - Status and logs from dependabot are provided at
+#   https://github.com/jupyterhub/jupyterhub/network/updates.
+#
+version: 2
+updates:
+  # Maintain dependencies in our GitHub Workflows
+  - package-ecosystem: github-actions
+    directory: /
+    labels: [ci]
+    schedule:
+      interval: monthly
+      time: "05:00"
+      timezone: Etc/UTC
+  - package-ecosystem: npm
+    directory: /
+    groups:
+      # one big pull request for minor bumps
+      npm-minor:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+    schedule:
+      interval: monthly
+  - package-ecosystem: npm
+    directory: /jsx
+    groups:
+      # one big pull request for minor bumps
+      jsx-minor:
+        patterns:
+          - "*"
+        update-types:
+          - minor
+          - patch
+      # group major bumps of react-related dependencies
+      jsx-react:
+        patterns:
+          - "react*"
+          - "redux*"
+          - "*react"
+          - "recompose"
+        update-types:
+          - major
+      # group major bumps of webpack-related dependencies
+      jsx-webpack:
+        patterns:
+          - "webpack*"
+          - "@babel/*"
+          - "*-loader"
+        update-types:
+          - major
+    schedule:
+      interval: monthly

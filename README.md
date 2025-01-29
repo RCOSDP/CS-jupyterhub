@@ -8,22 +8,12 @@
 
 ---
 
-Please note that this repository is participating in a study into the sustainability of open source projects. Data will be gathered about this repository for approximately the next 12 months, starting from 2021-06-11.
-
-Data collected will include the number of contributors, number of PRs, time taken to close/merge these PRs, and issues closed.
-
-For more information, please visit
-[our informational page](https://sustainable-open-science-and-software.github.io/) or download our [participant information sheet](https://sustainable-open-science-and-software.github.io/assets/PIS_sustainable_software.pdf).
-
----
-
 # [JupyterHub](https://github.com/jupyterhub/jupyterhub)
 
 [![Latest PyPI version](https://img.shields.io/pypi/v/jupyterhub?logo=pypi)](https://pypi.python.org/pypi/jupyterhub)
 [![Latest conda-forge version](https://img.shields.io/conda/vn/conda-forge/jupyterhub?logo=conda-forge)](https://anaconda.org/conda-forge/jupyterhub)
 [![Documentation build status](https://img.shields.io/readthedocs/jupyterhub?logo=read-the-docs)](https://jupyterhub.readthedocs.org/en/latest/)
 [![GitHub Workflow Status - Test](https://img.shields.io/github/workflow/status/jupyterhub/jupyterhub/Test?logo=github&label=tests)](https://github.com/jupyterhub/jupyterhub/actions)
-[![DockerHub build status](https://img.shields.io/docker/build/jupyterhub/jupyterhub?logo=docker&label=build)](https://hub.docker.com/r/jupyterhub/jupyterhub/tags)
 [![Test coverage of code](https://codecov.io/gh/jupyterhub/jupyterhub/branch/main/graph/badge.svg)](https://codecov.io/gh/jupyterhub/jupyterhub)
 [![GitHub](https://img.shields.io/badge/issue_tracking-github-blue?logo=github)](https://github.com/jupyterhub/jupyterhub/issues)
 [![Discourse](https://img.shields.io/badge/help_forum-discourse-blue?logo=discourse)](https://discourse.jupyter.org/c/jupyterhub)
@@ -66,7 +56,7 @@ for administration of the Hub and its users.
 ### Check prerequisites
 
 - A Linux/Unix based system
-- [Python](https://www.python.org/downloads/) 3.6 or greater
+- [Python](https://www.python.org/downloads/) 3.8 or greater
 - [nodejs/npm](https://www.npmjs.com/)
 
   - If you are using **`conda`**, the nodejs and npm dependencies will be installed for
@@ -127,7 +117,7 @@ more configuration of the system.
 
 ## Configuration
 
-The [Getting Started](https://jupyterhub.readthedocs.io/en/latest/getting-started/index.html) section of the
+The [Getting Started](https://jupyterhub.readthedocs.io/en/latest/tutorial/index.html#getting-started) section of the
 documentation explains the common steps in setting up JupyterHub.
 
 The [**JupyterHub tutorial**](https://github.com/jupyterhub/jupyterhub-tutorial)
@@ -169,10 +159,10 @@ To start the Hub on a specific url and port `10.0.1.2:443` with **https**:
 
 ## Docker
 
-A starter [**docker image for JupyterHub**](https://hub.docker.com/r/jupyterhub/jupyterhub/)
+A starter [**docker image for JupyterHub**](https://quay.io/repository/jupyterhub/jupyterhub)
 gives a baseline deployment of JupyterHub using Docker.
 
-**Important:** This `jupyterhub/jupyterhub` image contains only the Hub itself,
+**Important:** This `quay.io/jupyterhub/jupyterhub` image contains only the Hub itself,
 with no configuration. In general, one needs to make a derivative image, with
 at least a `jupyterhub_config.py` setting up an Authenticator and/or a Spawner.
 To run the single-user servers, which may be on the same system as the Hub or
@@ -180,7 +170,7 @@ not, Jupyter Notebook version 4 or greater must be installed.
 
 The JupyterHub docker image can be started with the following command:
 
-    docker run -p 8000:8000 -d --name jupyterhub jupyterhub/jupyterhub jupyterhub
+    docker run -p 8000:8000 -d --name jupyterhub quay.io/jupyterhub/jupyterhub jupyterhub
 
 This command will create a container named `jupyterhub` that you can
 **stop and resume** with `docker stop/start`.
@@ -239,9 +229,9 @@ You can also talk with us on our JupyterHub [Gitter](https://gitter.im/jupyterhu
 
 - [Reporting Issues](https://github.com/jupyterhub/jupyterhub/issues)
 - [JupyterHub tutorial](https://github.com/jupyterhub/jupyterhub-tutorial)
-- [Documentation for JupyterHub](https://jupyterhub.readthedocs.io/en/latest/) | [PDF (latest)](https://media.readthedocs.org/pdf/jupyterhub/latest/jupyterhub.pdf) | [PDF (stable)](https://media.readthedocs.org/pdf/jupyterhub/stable/jupyterhub.pdf)
+- [Documentation for JupyterHub](https://jupyterhub.readthedocs.io/en/latest/)
 - [Documentation for JupyterHub's REST API][rest api]
-- [Documentation for Project Jupyter](http://jupyter.readthedocs.io/en/latest/index.html) | [PDF](https://media.readthedocs.org/pdf/jupyter/latest/jupyter.pdf)
+- [Documentation for Project Jupyter](http://jupyter.readthedocs.io/en/latest/index.html)
 - [Project Jupyter website](https://jupyter.org)
 - [Project Jupyter community](https://jupyter.org/community)
 

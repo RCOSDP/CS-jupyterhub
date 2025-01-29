@@ -1,8 +1,8 @@
 """Authorization handlers"""
+
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import json
-from datetime import datetime
 from unittest import mock
 from urllib.parse import parse_qsl, quote, urlencode, urlparse, urlunparse
 
@@ -10,11 +10,16 @@ from oauthlib import oauth2
 from tornado import web
 
 from .. import orm, roles, scopes
-from ..utils import get_browser_protocol, token_authenticated
+from ..utils import get_browser_protocol, token_authenticated, utcnow
 from .base import APIHandler, BaseHandler
 
 
 class TokenAPIHandler(APIHandler):
+    def check_xsrf_cookie(self):
+        # no xsrf check needed here
+        # post is just a 404
+        return
+
     @token_authenticated
     def get(self, token):
         # FIXME: deprecate this API for oauth token resolution, in favor of using /api/user
@@ -34,14 +39,14 @@ class TokenAPIHandler(APIHandler):
             self.parsed_scopes = scopes.parse_scopes(self.expanded_scopes)
 
         # record activity whenever we see a token
-        now = orm_token.last_activity = datetime.utcnow()
+        now = orm_token.last_activity = utcnow(with_tz=False)
         if orm_token.user:
             orm_token.user.last_activity = now
             model = self.user_model(self.users[orm_token.user])
         elif orm_token.service:
             model = self.service_model(orm_token.service)
         else:
-            self.log.warning("%s has no user or service. Deleting..." % orm_token)
+            self.log.warning(f"{orm_token} has no user or service. Deleting...")
             self.db.delete(orm_token)
             self.db.commit()
             raise web.HTTPError(404)
@@ -105,14 +110,20 @@ class OAuthHandler:
         redirect_uri = self.get_argument('redirect_uri')
         if not redirect_uri or not redirect_uri.startswith('/'):
             return uri
+
         # make absolute local redirects full URLs
         # to satisfy oauthlib's absolute URI requirement
-        redirect_uri = (
-            get_browser_protocol(self.request)
-            + "://"
-            + self.request.host
-            + redirect_uri
-        )
+
+        public_url = self.settings.get("public_url")
+        if public_url:
+            proto = public_url.scheme
+            host = public_url.netloc
+        else:
+            # guess from request
+            proto = get_browser_protocol(self.request)
+            host = self.request.host
+        redirect_uri = f"{proto}://{host}{redirect_uri}"
+
         parsed_url = urlparse(uri)
         query_list = parse_qsl(parsed_url.query, keep_blank_values=True)
         for idx, item in enumerate(query_list):
@@ -378,32 +389,6 @@ class OAuthAuthorizeHandler(OAuthHandler, BaseHandler):
     @web.authenticated
     def post(self):
         uri, http_method, body, headers = self.extract_oauth_params()
-        referer = self.request.headers.get('Referer', 'no referer')
-        full_url = self.request.full_url()
-        # trim protocol, which cannot be trusted with multiple layers of proxies anyway
-        # Referer is set by browser, but full_url can be modified by proxy layers to appear as http
-        # when it is actually https
-        referer_proto, _, stripped_referer = referer.partition("://")
-        referer_proto = referer_proto.lower()
-        req_proto, _, stripped_full_url = full_url.partition("://")
-        req_proto = req_proto.lower()
-        if referer_proto != req_proto:
-            self.log.warning("Protocol mismatch: %s != %s", referer, full_url)
-            if req_proto == "https":
-                # insecure origin to secure target is not allowed
-                raise web.HTTPError(
-                    403, "Not allowing authorization form submitted from insecure page"
-                )
-        if stripped_referer != stripped_full_url:
-            # OAuth post must be made to the URL it came from
-            self.log.error("Original OAuth POST from %s != %s", referer, full_url)
-            self.log.error(
-                "Stripped OAuth POST from %s != %s", stripped_referer, stripped_full_url
-            )
-            raise web.HTTPError(
-                403, "Authorization form must be sent from authorization page"
-            )
-
         # The scopes the user actually authorized, i.e. checkboxes
         # that were selected.
         scopes = self.get_arguments('scopes')

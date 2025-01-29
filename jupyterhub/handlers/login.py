@@ -1,4 +1,5 @@
 """HTTP Handlers for the hub server"""
+
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import asyncio
@@ -101,8 +102,12 @@ class LoginHandler(BaseHandler):
             "login_url": self.settings['login_url'],
             "authenticator_login_url": url_concat(
                 self.authenticator.login_url(self.hub.base_url),
-                {'next': self.get_argument('next', '')},
+                {
+                    'next': self.get_argument('next', ''),
+                },
             ),
+            "authenticator": self.authenticator,
+            "xsrf": self.xsrf_token.decode('ascii'),
         }
         custom_html = Template(
             self.authenticator.get_custom_html(self.hub.base_url)
@@ -147,7 +152,10 @@ class LoginHandler(BaseHandler):
     async def post(self):
         # parse the arguments dict
         data = {}
-        for arg in self.request.arguments:
+        for arg in self.request.body_arguments:
+            if arg == "_xsrf":
+                # don't include xsrf token in auth input
+                continue
             # strip username, but not other fields like passwords,
             # which should be allowed to start or end with space
             data[arg] = self.get_argument(arg, strip=arg == "username")

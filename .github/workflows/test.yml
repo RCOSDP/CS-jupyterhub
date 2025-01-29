@@ -28,7 +28,6 @@ on:
 env:
   # UTF-8 content may be interpreted as ascii and causes errors without this.
   LANG: C.UTF-8
-  PYTEST_ADDOPTS: "--verbose --color=yes"
   SQLALCHEMY_WARN_20: "1"
 
 permissions:
@@ -37,7 +36,7 @@ permissions:
 jobs:
   # Run "pytest jupyterhub/tests" in various configurations
   pytest:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 15
 
     strategy:
@@ -66,7 +65,7 @@ jobs:
         #   unencrypted HTTP
         #
         # main_dependencies:
-        #   Tests everything when the we use the latest available dependencies
+        #   Tests everything when we use the latest available dependencies
         #   from: traitlets.
         #
         # NOTE: Since only the value of these parameters are presented in the
@@ -75,22 +74,39 @@ jobs:
         # Python versions available at:
         #   https://github.com/actions/python-versions/blob/HEAD/versions-manifest.json
         include:
-          - python: "3.7"
+          - python: "3.8"
             oldest_dependencies: oldest_dependencies
             legacy_notebook: legacy_notebook
           - python: "3.8"
-            legacy_notebook: legacy_notebook
+            jupyter_server: "1.*"
+            subset: singleuser
           - python: "3.9"
             db: mysql
           - python: "3.10"
             db: postgres
-          - python: "3.11"
+          - python: "3.12"
             subdomain: subdomain
+            serverextension: serverextension
           - python: "3.11"
             ssl: ssl
+            serverextension: serverextension
           - python: "3.11"
-            selenium: selenium
+            jupyverse: jupyverse
+            subset: singleuser
           - python: "3.11"
+            subdomain: subdomain
+            noextension: noextension
+            subset: singleuser
+          - python: "3.11"
+            ssl: ssl
+            noextension: noextension
+            subset: singleuser
+          - python: "3.11"
+            browser: browser
+          - python: "3.11"
+            subdomain: subdomain
+            browser: browser
+          - python: "3.12"
             main_dependencies: main_dependencies
 
     steps:
@@ -104,7 +120,7 @@ jobs:
           fi
           if [ "${{ matrix.db }}" == "mysql" ]; then
               echo "MYSQL_HOST=127.0.0.1" >> $GITHUB_ENV
-              echo "JUPYTERHUB_TEST_DB_URL=mysql+mysqlconnector://root@127.0.0.1:3306/jupyterhub" >> $GITHUB_ENV
+              echo "JUPYTERHUB_TEST_DB_URL=mysql+mysqldb://root@127.0.0.1:3306/jupyterhub" >> $GITHUB_ENV
           fi
           if [ "${{ matrix.ssl }}" == "ssl" ]; then
               echo "SSL_ENABLED=1" >> $GITHUB_ENV
@@ -115,55 +131,76 @@ jobs:
               echo "PGPASSWORD=hub[test/:?" >> $GITHUB_ENV
               echo "JUPYTERHUB_TEST_DB_URL=postgresql://test_user:hub%5Btest%2F%3A%3F@127.0.0.1:5432/jupyterhub" >> $GITHUB_ENV
           fi
-          if [ "${{ matrix.jupyter_server }}" != "" ]; then
-              echo "JUPYTERHUB_SINGLEUSER_APP=jupyterhub.tests.mockserverapp.MockServerApp" >> $GITHUB_ENV
+          if [ "${{ matrix.serverextension }}" != "" ]; then
+              echo "JUPYTERHUB_SINGLEUSER_EXTENSION=1" >> $GITHUB_ENV
+          elif [ "${{ matrix.noextension }}" != "" ]; then
+              echo "JUPYTERHUB_SINGLEUSER_EXTENSION=0" >> $GITHUB_ENV
           fi
-      - uses: actions/checkout@v3
-      # NOTE: actions/setup-node@v3 make use of a cache within the GitHub base
+          if [ "${{ matrix.jupyverse }}" != "" ]; then
+              echo "JUPYTERHUB_SINGLEUSER_APP=jupyverse" >> $GITHUB_ENV
+          fi
+      - uses: actions/checkout@v4
+      # NOTE: actions/setup-node@v4 make use of a cache within the GitHub base
       #       environment and setup in a fraction of a second.
-      - name: Install Node v14
-        uses: actions/setup-node@v3
+      - name: Install Node
+        uses: actions/setup-node@v4
         with:
-          node-version: "14"
+          node-version: "20"
       - name: Install Javascript dependencies
         run: |
           npm install
           npm install -g configurable-http-proxy yarn
           npm list
 
-      # NOTE: actions/setup-python@v4 make use of a cache within the GitHub base
+      # NOTE: actions/setup-python@v5 make use of a cache within the GitHub base
       #       environment and setup in a fraction of a second.
       - name: Install Python ${{ matrix.python }}
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "${{ matrix.python }}"
+          cache: pip
+          cache-dependency-path: |
+            pyproject.toml
+            requirements.txt
+            ci/oldest-dependencies/requirements.old
 
       - name: Install Python dependencies
         run: |
           pip install --upgrade pip
-          pip install -e ".[test]"
 
           if [ "${{ matrix.oldest_dependencies }}" != "" ]; then
-            # take any dependencies in requirements.txt such as tornado>=5.0
-            # and transform them to tornado==5.0 so we can run tests with
-            # the earliest-supported versions
-            cat requirements.txt | grep '>=' | sed -e 's@>=@==@g' > oldest-requirements.txt
-            pip install -r oldest-requirements.txt
+            # frozen env with oldest dependencies
+            # make sure our `>=` pins really do express our minimum supported versions
+            pip install -r ci/oldest-dependencies/requirements.old -e .
+          else
+            pip install --pre -e ".[test]"
           fi
 
           if [ "${{ matrix.main_dependencies }}" != "" ]; then
-              pip install git+https://github.com/ipython/traitlets#egg=traitlets --force
+              # Tests are broken:
+              # https://github.com/jupyterhub/jupyterhub/issues/4418
+              # pip install git+https://github.com/ipython/traitlets#egg=traitlets --force
               pip install --upgrade --pre sqlalchemy
           fi
           if [ "${{ matrix.legacy_notebook }}" != "" ]; then
               pip uninstall jupyter_server --yes
               pip install 'notebook<7'
           fi
+          if [ "${{ matrix.jupyter_server }}" != "" ]; then
+              pip install "jupyter_server==${{ matrix.jupyter_server }}"
+          fi
+          if [ "${{ matrix.jupyverse }}" != "" ]; then
+              pip install "jupyverse[jupyterlab,auth-jupyterhub]"
+              pip install -e .
+          fi
           if [ "${{ matrix.db }}" == "mysql" ]; then
-              pip install mysql-connector-python
+              pip install mysqlclient
           fi
           if [ "${{ matrix.db }}" == "postgres" ]; then
               pip install psycopg2-binary
+          fi
+          if [ "${{ matrix.serverextension }}" != "" ]; then
+            pip install 'jupyter-server>=2'
           fi
 
           pip freeze
@@ -208,38 +245,32 @@ jobs:
               DB=postgres bash ci/docker-db.sh
               DB=postgres bash ci/init-db.sh
           fi
-      - name: Setup Firefox
-        if: matrix.selenium
-        uses: browser-actions/setup-firefox@latest
-        with:
-          firefox-version: latest
 
-      - name: Setup Geckodriver
-        if: matrix.selenium
-        uses: browser-actions/setup-geckodriver@latest
+      - name: Configure browser tests
+        if: matrix.browser
+        run: echo "PYTEST_ADDOPTS=$PYTEST_ADDOPTS -m browser" >> "${GITHUB_ENV}"
 
-      - name: Configure selenium tests
-        if: matrix.selenium
-        run: echo "PYTEST_ADDOPTS=$PYTEST_ADDOPTS -m selenium" >> "${GITHUB_ENV}"
+      - name: Ensure browsers are installed for playwright
+        if: matrix.browser
+        run: python -m playwright install --with-deps
 
       - name: Run pytest
         run: |
-          pytest --maxfail=2 --cov=jupyterhub jupyterhub/tests
+          pytest -k "${{ matrix.subset }}" --maxfail=2 --cov=jupyterhub jupyterhub/tests
 
-      - uses: codecov/codecov-action@v3
+      - uses: codecov/codecov-action@v4
 
   docker-build:
-    runs-on: ubuntu-20.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
 
     steps:
-      - uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
       - name: build images
         run: |
-          docker build -t jupyterhub/jupyterhub .
+          DOCKER_BUILDKIT=1 docker build -t jupyterhub/jupyterhub .
           docker build -t jupyterhub/jupyterhub-onbuild onbuild
-          docker build -t jupyterhub/jupyterhub:alpine -f dockerfiles/Dockerfile.alpine .
           docker build -t jupyterhub/singleuser singleuser
 
       - name: smoke test jupyterhub

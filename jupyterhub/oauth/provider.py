@@ -2,6 +2,7 @@
 
 implements https://oauthlib.readthedocs.io/en/latest/oauth2/server.html
 """
+
 from oauthlib import uri_validate
 from oauthlib.oauth2 import RequestValidator, WebApplicationServer
 from oauthlib.oauth2.rfc6749.grant_types import authorization_code, base
@@ -155,7 +156,7 @@ class JupyterHubRequestValidator(RequestValidator):
             self.db.query(orm.OAuthClient).filter_by(identifier=client_id).first()
         )
         if orm_client is None:
-            raise ValueError("No such client: %s" % client_id)
+            raise ValueError(f"No such client: {client_id}")
         scopes = set(orm_client.allowed_scopes)
         if 'inherit' not in scopes:
             # add identify-user scope
@@ -254,7 +255,7 @@ class JupyterHubRequestValidator(RequestValidator):
             self.db.query(orm.OAuthClient).filter_by(identifier=client_id).first()
         )
         if orm_client is None:
-            raise ValueError("No such client: %s" % client_id)
+            raise ValueError(f"No such client: {client_id}")
 
         orm_code = orm.OAuthCode(
             code=code['code'],
@@ -344,7 +345,7 @@ class JupyterHubRequestValidator(RequestValidator):
         app_log.debug("Saving bearer token %s", log_token)
 
         if request.user is None:
-            raise ValueError("No user for access token: %s" % request.user)
+            raise ValueError(f"No user for access token: {request.user}")
         client = (
             self.db.query(orm.OAuthClient)
             .filter_by(identifier=request.client.client_id)
@@ -424,6 +425,7 @@ class JupyterHubRequestValidator(RequestValidator):
         if orm_client is None:
             return False
         if not orm_client.secret:
+            app_log.warning("OAuth client %s present without secret", client_id)
             return False
         request.client = orm_client
         return True
@@ -669,6 +671,18 @@ class JupyterHubOAuthServer(WebApplicationServer):
         orm_client.allowed_scopes = list(allowed_scopes)
         self.db.commit()
         return orm_client
+
+    def remove_client(self, client_id):
+        """Remove a client by its id if it is existed."""
+        orm_client = (
+            self.db.query(orm.OAuthClient).filter_by(identifier=client_id).one_or_none()
+        )
+        if orm_client is not None:
+            self.db.delete(orm_client)
+            self.db.commit()
+            app_log.info("Removed client %s", client_id)
+        else:
+            app_log.warning("No such client %s", client_id)
 
     def fetch_by_client_id(self, client_id):
         """Find a client by its id"""

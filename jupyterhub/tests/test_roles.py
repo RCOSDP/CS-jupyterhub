@@ -1,7 +1,9 @@
 """Test roles"""
+
 # Copyright (c) Jupyter Development Team.
 # Distributed under the terms of the Modified BSD License.
 import json
+import logging
 import os
 import warnings
 
@@ -21,17 +23,10 @@ from .utils import add_user, api_request
 def test_orm_roles(db):
     """Test orm roles setup"""
     user_role = orm.Role.find(db, name='user')
+    user_role.users = []
     token_role = orm.Role.find(db, name='token')
-    service_role = orm.Role.find(db, name='service')
-    if not user_role:
-        user_role = orm.Role(name='user', scopes=['self'])
-        db.add(user_role)
-    if not token_role:
-        token_role = orm.Role(name='token', scopes=['inherit'])
-        db.add(token_role)
-    if not service_role:
-        service_role = orm.Role(name='service', scopes=[])
-        db.add(service_role)
+    service_role = orm.Role(name="service")
+    db.add(service_role)
     db.commit()
 
     group_role = orm.Role(name='group', scopes=['read:users'])
@@ -236,6 +231,16 @@ def test_orm_roles_delete_cascade(db):
             ['tokens!group=hobbits'],
             {'tokens!group=hobbits', 'read:tokens!group=hobbits'},
         ),
+        (
+            ['admin:services'],
+            {
+                'read:roles:services',
+                'read:services:name',
+                'admin:services',
+                'list:services',
+                'read:services',
+            },
+        ),
     ],
 )
 def test_get_expanded_scopes(db, scopes, expected_scopes):
@@ -276,7 +281,7 @@ async def test_load_default_roles(tmpdir, request):
                 'scopes': ['groups'],
             },
             'info',
-            app_log.info('Role new-role added to database'),
+            'Role new-role added to database',
         ),
         (
             'the-same-role',
@@ -293,7 +298,7 @@ async def test_load_default_roles(tmpdir, request):
             'no_scopes',
             {'name': 'no-permissions'},
             'warning',
-            app_log.warning('Warning: New defined role no-permissions has no scopes'),
+            'Role no-permissions will have no scopes',
         ),
         (
             'admin',
@@ -311,19 +316,20 @@ async def test_load_default_roles(tmpdir, request):
             'user',
             {'name': 'user', 'scopes': ['read:users:name']},
             'info',
-            app_log.info('Role user scopes attribute has been changed'),
+            'Role attribute user.scopes has been changed',
         ),
         # rewrite the user role back to 'default'
         (
             'user',
             {'name': 'user', 'scopes': ['self']},
             'info',
-            app_log.info('Role user scopes attribute has been changed'),
+            'Role attribute user.scopes has been changed',
         ),
     ],
 )
-async def test_creating_roles(app, role, role_def, response_type, response):
+async def test_creating_roles(app, role, role_def, response_type, response, caplog):
     """Test raising errors and warnings when creating/modifying roles"""
+    caplog.set_level(logging.INFO)
 
     db = app.db
 
@@ -332,8 +338,9 @@ async def test_creating_roles(app, role, role_def, response_type, response):
             roles.create_role(db, role_def)
 
     elif response_type == 'warning' or response_type == 'info':
-        with pytest.warns(response):
-            roles.create_role(db, role_def)
+        roles.create_role(db, role_def)
+        if response:
+            assert response in caplog.text
         # check the role has been created/modified
         role = orm.Role.find(db, role_def['name'])
         assert role is not None
@@ -344,15 +351,8 @@ async def test_creating_roles(app, role, role_def, response_type, response):
 
     # make sure no warnings/info logged when the role exists and its definition hasn't been changed
     elif response_type == 'no-log':
-        with pytest.warns(response) as record:
-            # don't catch already-suppressed sqlalchemy warnings
-            warnings.simplefilter("ignore", SADeprecationWarning)
-            roles.create_role(db, role_def)
-
-        for warning in record.list:
-            # show warnings for debugging
-            print("Unexpected warning", warning)
-        assert not record.list
+        roles.create_role(db, role_def)
+        assert caplog.text == ""
         role = orm.Role.find(db, role_def['name'])
         assert role is not None
 
@@ -365,14 +365,16 @@ async def test_creating_roles(app, role, role_def, response_type, response):
             'existing',
             'test-role1',
             'info',
-            app_log.info('Role user scopes attribute has been changed'),
+            'Role test-role1 has been deleted',
         ),
         ('non-existing', 'test-role2', 'error', KeyError),
         ('default', 'user', 'error', ValueError),
     ],
 )
-async def test_delete_roles(db, role_type, rolename, response_type, response):
+async def test_delete_roles(app, role_type, rolename, response_type, response, caplog):
     """Test raising errors and info when deleting roles"""
+    caplog.set_level(logging.INFO)
+    db = app.db
 
     if response_type == 'info':
         # add the role to db
@@ -381,9 +383,10 @@ async def test_delete_roles(db, role_type, rolename, response_type, response):
         db.commit()
         check_role = orm.Role.find(db, rolename)
         assert check_role is not None
-        # check the role is deleted and info raised
-        with pytest.warns(response):
-            roles.delete_role(db, rolename)
+        # check the role is deleted and info logged
+        roles.delete_role(db, rolename)
+        if response:
+            assert response in caplog.text
         check_role = orm.Role.find(db, rolename)
         assert check_role is None
 
@@ -576,9 +579,9 @@ async def test_load_roles_services(tmpdir, request, preserve_scopes):
 async def test_load_roles_groups(tmpdir, request):
     """Test loading predefined roles for groups in app.py"""
     groups_to_load = {
-        'group1': ['gandalf'],
-        'group2': ['bilbo', 'gargamel'],
-        'group3': ['cyclops'],
+        'group1': {'users': ['gandalf'], 'properties': {}},
+        'group2': {'users': ['bilbo', 'gargamel'], 'properties': {}},
+        'group3': {'users': ['cyclops'], 'properties': {}},
     }
     roles_to_load = [
         {
@@ -848,8 +851,12 @@ async def test_server_token_role(app):
     orm_server_token = orm.APIToken.find(app.db, server_token)
     assert orm_server_token
 
-    server_role = orm.Role.find(app.db, 'server')
-    assert set(server_role.scopes) == set(orm_server_token.scopes)
+    # resolve `!server` filter in server role
+    server_role_scopes = {
+        s.replace("!server", f"!server={user.name}/")
+        for s in orm.Role.find(app.db, "server").scopes
+    }
+    assert set(orm_server_token.scopes) == server_role_scopes
 
     assert orm_server_token.user.name == user.name
     assert user.api_tokens == [orm_server_token]
@@ -951,7 +958,7 @@ async def test_user_group_roles(app, create_temp_role):
     # jack's API token
     token = user.new_api_token()
 
-    headers = {'Authorization': 'token %s' % token}
+    headers = {'Authorization': f'token {token}'}
     r = await api_request(app, f'users/{user.name}', method='get', headers=headers)
     assert r.status_code == 200
     r.raise_for_status()
@@ -963,7 +970,7 @@ async def test_user_group_roles(app, create_temp_role):
     assert len(reply['roles']) == 1
     assert group_role.name not in reply['roles']
 
-    headers = {'Authorization': 'token %s' % token}
+    headers = {'Authorization': f'token {token}'}
     r = await api_request(app, 'groups', method='get', headers=headers)
     assert r.status_code == 200
     r.raise_for_status()
@@ -973,7 +980,7 @@ async def test_user_group_roles(app, create_temp_role):
     assert len(reply) == 1
     assert reply[0]['name'] == 'A'
 
-    headers = {'Authorization': 'token %s' % token}
+    headers = {'Authorization': f'token {token}'}
     r = await api_request(app, f'users/{user.name}', method='get', headers=headers)
     assert r.status_code == 200
     r.raise_for_status()
@@ -1068,6 +1075,7 @@ async def test_duplicate_role_users():
     hub.init_db()
     with pytest.raises(ValueError):
         await hub.init_role_creation()
+    hub.db.rollback()
 
 
 async def test_admin_role_and_flag():
@@ -1154,6 +1162,7 @@ async def test_no_admin_role_change():
     hub.init_db()
     with pytest.raises(ValueError):
         await hub.init_role_creation()
+    hub.db.rollback()
 
 
 @pytest.mark.parametrize(
@@ -1243,7 +1252,6 @@ async def test_admin_role_respects_config():
     ],
 )
 async def test_admin_role_membership(in_db, role_users, admin_users, expected_members):
-
     load_roles = []
     if role_users is not None:
         load_roles.append({"name": "admin", "users": role_users})
@@ -1267,6 +1275,131 @@ async def test_admin_role_membership(in_db, role_users, admin_users, expected_me
     admin_role = orm.Role.find(db, 'admin')
     role_members = sorted(user.name for user in admin_role.users)
     assert role_members == expected_members
+
+
+@mark.parametrize(
+    "role_spec",
+    [
+        pytest.param(
+            {
+                'name': 'elephant',
+                'users': ['admin'],
+            },
+            id="should not allow assigning a role to a user",
+        ),
+        pytest.param(
+            {
+                'name': 'elephant',
+                'groups': ['test-group'],
+            },
+            id="should not allow assigning a role to a group",
+        ),
+    ],
+)
+async def test_manage_roles_disallows_role_assignment(role_spec):
+    roles_to_load = [role_spec]
+    hub = MockHub(load_roles=roles_to_load)
+    hub.init_db()
+    hub.authenticator.manage_roles = True
+    with pytest.raises(
+        ValueError,
+        match="`load_roles` can not be used for assigning roles to users nor groups",
+    ):
+        await hub.init_role_creation()
+    hub.db.rollback()
+
+
+@mark.parametrize(
+    "role_spec",
+    [
+        pytest.param(
+            {'name': 'elephant', 'description': 'pacing about'},
+            id="should allow creating a new role",
+        ),
+        pytest.param(
+            {
+                'name': 'elephant',
+                'scopes': ['read:hub'],
+            },
+            id="should allow assigning a scope to a new role",
+        ),
+        pytest.param(
+            {'name': 'user', 'scopes': ['read:hub']},
+            id="should allow assigning a scope to a default role",
+        ),
+    ],
+)
+async def test_manage_roles_allows_using_load_roles(role_spec):
+    roles_to_load = [role_spec]
+    hub = MockHub(load_roles=roles_to_load)
+    hub.init_db()
+    hub.authenticator.manage_roles = True
+    hub.authenticator.reset_managed_roles_on_startup = False
+    await hub.init_role_creation()
+
+
+async def test_manage_roles_loads_default_roles():
+    hub = MockHub()
+    hub.init_db()
+    hub.authenticator.manage_roles = True
+    hub.authenticator.reset_managed_roles_on_startup = False
+    await hub.init_role_creation()
+    admin_role = orm.Role.find(hub.db, 'admin')
+    assert admin_role
+
+
+async def empty_load_managed_roles():
+    return []
+
+
+async def test_reset_managed_roles_clears_assignments(app):
+    hub = MockHub()
+    hub.init_db()
+    await hub.init_role_creation()
+    hub.db.commit()
+
+    user = orm.User(name='test-user')
+    role = orm.Role(name='test-role')
+    hub.db.add_all([user, role])
+    hub.db.commit()
+
+    # assign the test role to the user, marking the assignment as managed
+    roles.grant_role(hub.db, user, role, managed=True)
+
+    assert len(user.roles) == 1
+
+    # on next startup the roles assignments managed by authenticator should be removed
+    hub.authenticator.manage_roles = True
+    hub.authenticator.reset_managed_roles_on_startup = True
+    hub.authenticator.load_managed_roles = empty_load_managed_roles
+
+    await hub.init_role_creation()
+    assert len(user.roles) == 0
+
+
+async def test_reset_managed_roles_clears_managed_roles(app):
+    hub = MockHub()
+    hub.init_db()
+
+    # create a new role, marking it as managed
+    role = roles.create_role(hub.db, {'name': 'test-role', 'managed_by_auth': True})
+
+    managed_roles = (
+        hub.db.query(orm.Role).filter(orm.Role.managed_by_auth == True).all()
+    )
+    assert len(managed_roles) == 1
+
+    hub.authenticator.manage_roles = True
+    hub.authenticator.reset_managed_roles_on_startup = True
+    hub.authenticator.load_managed_roles = empty_load_managed_roles
+
+    # on next startup the managed roles created by authenticator should be removed
+    await hub.init_role_creation()
+
+    managed_roles = (
+        hub.db.query(orm.Role).filter(orm.Role.managed_by_auth == True).all()
+    )
+    assert len(managed_roles) == 0
 
 
 async def test_no_default_service_role():

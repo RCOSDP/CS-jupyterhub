@@ -1,7 +1,13 @@
+const jhdata = window.jhdata || {};
+const base_url = jhdata.base_url || "/";
+const xsrfToken = jhdata.xsrf_token;
+
 export const jhapiRequest = (endpoint, method, data) => {
-  let base_url = window.base_url || "/",
-    api_url = `${base_url}hub/api`;
-  return fetch(api_url + endpoint, {
+  let api_url = new URL(`${base_url}api` + endpoint, location.origin);
+  if (xsrfToken) {
+    api_url.searchParams.set("_xsrf", xsrfToken);
+  }
+  return fetch(api_url, {
     method: method,
     json: true,
     headers: {
